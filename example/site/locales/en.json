@@ -1,0 +1,8 @@
+{
+  "site.name": "Hearth blog",
+  "site.description": "A blog whose pages come from Postgres and are served as files.",
+  "nav.first": "First post",
+  "home.title": "Hearth blog",
+  "home.heading": "Posts from the database",
+  "home.intro": "Each post below is rendered from a Postgres row on first visit, then served from a file."
+}

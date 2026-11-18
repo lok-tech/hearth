@@ -1,0 +1,69 @@
+/*
+ * Fonts: prefer the system stack (no request, no layout shift). If you ship a web font:
+ *   - self-host a WOFF2 subset in src/fonts/ and reference it with a relative url() so Vite hashes it
+ *   - set font-display: swap and add size-adjust/ascent-override to match the fallback metrics
+ *   - preload only the one file used above the fold
+ *   - never @import a stylesheet from CSS (it blocks rendering in a chain)
+ */
+:root {
+  color-scheme: light dark;
+  --fg: #1c1b1a;
+  --bg: #fbfaf8;
+  --accent: #b4441f;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Hebrew", sans-serif;
+  line-height: 1.6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #ece9e4;
+    --bg: #181716;
+    --accent: #f08a62;
+  }
+}
+
+body {
+  margin: 0;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+/* Logical properties keep the layout correct in RTL languages. */
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-block: 1rem;
+  padding-inline: max(1rem, 5vw);
+}
+
+.site-header nav {
+  display: flex;
+  gap: 1rem;
+}
+
+.brand {
+  font-weight: 700;
+}
+
+a {
+  color: var(--accent);
+}
+
+a:focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 2px;
+}
+
+main {
+  max-inline-size: 42rem;
+  padding-inline: max(1rem, 5vw);
+}
+
+img,
+picture {
+  max-inline-size: 100%;
+  block-size: auto;
+}

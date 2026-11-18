@@ -1,0 +1,11 @@
+{{define "title"}}{{t "home.title"}}{{end}}
+{{define "body"}}{{template "header" .}}
+<main>
+  <h1>{{t "home.heading"}}</h1>
+  <p>{{t "home.intro"}}</p>
+  <ul>
+    <li><a href="{{.Link "/post/hello-world"}}">hello-world</a></li>
+    <li><a href="{{.Link "/post/static-speed"}}">static-speed</a></li>
+  </ul>
+</main>
+{{end}}

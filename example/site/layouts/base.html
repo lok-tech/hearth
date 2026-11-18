@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="{{.Lang}}" dir="{{.Dir}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{block "title" .}}{{t "site.name"}}{{end}}</title>
+<meta name="description" content="{{block "description" .}}{{t "site.description"}}{{end}}">
+{{if .Canonical}}<link rel="canonical" href="{{.Canonical}}">
+{{end}}{{range $lang, $url := .Alternates}}<link rel="alternate" hreflang="{{$lang}}" href="{{$url}}">
+{{end}}<style>
+:root{color-scheme:light dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.6}
+body{margin:0;padding-inline:max(1rem,5vw)}
+header{display:flex;gap:1rem;justify-content:space-between;padding-block:1rem}
+main{max-inline-size:40rem}
+a{color:#b4441f}
+</style>
+</head>
+<body>
+{{block "body" .}}{{end}}
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "site.name": "בלוג Hearth",
+  "site.description": "בלוג שהדפים שלו מגיעים מ-Postgres ומוגשים כקבצים.",
+  "nav.first": "הפוסט הראשון",
+  "home.title": "בלוג Hearth",
+  "home.heading": "פוסטים מבסיס הנתונים",
+  "home.intro": "כל פוסט למטה מרונדר משורה ב-Postgres בביקור הראשון, ואחר כך מוגש מקובץ."
+}

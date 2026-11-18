@@ -1,0 +1,43 @@
+# Caddy in front of a Hearth Go server. Run from the project root:
+#   SITE_ADDRESS=example.com docker compose -f deploy/compose/compose.yaml up -d --build
+# The Go server writes rendered pages into the hearth-cache volume; Caddy only reads it.
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: app
+    environment:
+      HEARTH_CACHE_DIR: /var/cache/hearth
+      ADDR: ":8080"
+      # DATABASE_URL: ...   (your server's own settings)
+    volumes:
+      - hearth-cache:/var/cache/hearth
+    read_only: true
+    restart: unless-stopped
+    expose:
+      - "8080"
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: web
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+      APP_UPSTREAM: app:8080
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - hearth-cache:/srv/cache:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  hearth-cache:
+  caddy-data:
+  caddy-config:

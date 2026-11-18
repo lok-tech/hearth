@@ -1,0 +1,50 @@
+{
+  "name": "hearth",
+  "version": "0.1.0",
+  "description": "Static and SSR pages from one template location, baked to files for static-speed serving.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "hearth": "bin/hearth.js"
+  },
+  "exports": {
+    "./vite": {
+      "types": "./vite.d.ts",
+      "default": "./vite.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "vite.js",
+    "vite.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "sharp": ">=0.33",
+    "vite": ">=5"
+  },
+  "peerDependenciesMeta": {
+    "sharp": {
+      "optional": true
+    },
+    "vite": {
+      "optional": true
+    }
+  },
+  "optionalDependencies": {
+    "@hearth/cli-darwin-arm64": "0.1.0",
+    "@hearth/cli-darwin-x64": "0.1.0",
+    "@hearth/cli-linux-arm64": "0.1.0",
+    "@hearth/cli-linux-x64": "0.1.0",
+    "@hearth/cli-win32-arm64": "0.1.0",
+    "@hearth/cli-win32-x64": "0.1.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

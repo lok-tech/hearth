@@ -1,0 +1,58 @@
+# Postgres + the Hearth server + Caddy. From the repository root:
+#   docker compose -f example/compose.yaml up --build
+# then open http://localhost:8080/post/hello-world (also /he/post/hello-world, /post/hello -> 301,
+# /post/retired-post -> 410, /post/nope -> 404).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hearth
+      POSTGRES_PASSWORD: hearth # demo only
+      POSTGRES_DB: blog
+    volumes:
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hearth -d blog"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: ..
+      dockerfile: example/Dockerfile
+      target: app
+    environment:
+      DATABASE_URL: postgres://hearth:hearth@db:5432/blog?sslmode=disable
+      BASE_URL: http://localhost:8080
+      POLL_SECONDS: "2"
+    volumes:
+      - hearth-cache:/var/cache/hearth
+    read_only: true
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8080"
+
+  web:
+    build:
+      context: ..
+      dockerfile: example/Dockerfile
+      target: web
+    environment:
+      SITE_ADDRESS: ":8080" # plain HTTP for the demo; use your domain for automatic HTTPS
+      APP_UPSTREAM: app:8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - hearth-cache:/srv/cache:ro
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  hearth-cache:

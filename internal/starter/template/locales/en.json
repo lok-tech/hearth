@@ -1,0 +1,13 @@
+{
+  "site.name": "My site",
+  "site.description": "A fast, search-friendly site built with Hearth.",
+  "nav.label": "Main",
+  "nav.home": "Home",
+  "nav.about": "About",
+  "home.title": "Home | My site",
+  "home.heading": "Hello",
+  "home.intro": "This page was rendered once at build time and is served as a plain file.",
+  "about.title": "About | My site",
+  "about.heading": "About",
+  "about.body": "Static pages and server-rendered pages share one template location."
+}

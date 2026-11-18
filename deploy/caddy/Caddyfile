@@ -1,0 +1,57 @@
+# Hearth behind Caddy: prebuilt files, then the render cache, then the Go server.
+# UNVERIFIED against a live Caddy (see docs/DEPLOY.md "Verify"): run deploy/verify.sh against it.
+#
+# Env (all optional):
+#   SITE_ADDRESS   site address, default localhost (use example.com for automatic HTTPS)
+#   PUBLIC_ROOT    hearth build output, default /srv/public        (dist/public)
+#   CACHE_ROOT     the Go server's cache "current" link, default /srv/cache/current
+#   APP_UPSTREAM   the Go server, default app:8080
+{$SITE_ADDRESS:localhost} {
+	# One route block: directives run exactly in the order written.
+	route {
+		encode zstd gzip
+
+		# 1. Never serve dotfiles. The cache writes atomically through ".tmp-*" files that
+		#    must not be reachable while they are half written.
+		@dotfile path_regexp dotfile (^|/)\.
+		respond @dotfile 404
+
+		# 2. One URL per page: no trailing slash, no /index.html (matches the canonical URL).
+		@index_sub path_regexp index_sub ^/(.+)/index\.html$
+		redir @index_sub /{re.index_sub.1} 301
+		@index_root path /index.html
+		redir @index_root / 301
+		@slash path_regexp slash ^/(.+)/$
+		redir @slash /{re.slash.1} 301
+
+		# 3. Health and counters are for the platform, not the internet.
+		@healthz_public {
+			path /healthz
+			not remote_ip private_ranges 127.0.0.1 ::1
+		}
+		respond @healthz_public 404
+
+		# 4. Caching headers for files. Proxied responses keep the headers the Go server sets.
+		header Cache-Control "public, max-age=0, must-revalidate"
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+
+		# 5. Prebuilt pages and assets first. pass_thru continues to the next handler on a miss;
+		#    canonical_uris false stops Caddy from redirecting /about to /about/.
+		root * {$PUBLIC_ROOT:/srv/public}
+		file_server {
+			canonical_uris false
+			pass_thru
+		}
+
+		# 6. Then pages the Go server rendered and wrote earlier (read-only mount).
+		root * {$CACHE_ROOT:/srv/cache/current}
+		file_server {
+			canonical_uris false
+			pass_thru
+		}
+
+		# 7. Everything else: the Go server renders, writes the file, answers.
+		#    Next request for the same path is served by step 6.
+		reverse_proxy {$APP_UPSTREAM:app:8080}
+	}
+}

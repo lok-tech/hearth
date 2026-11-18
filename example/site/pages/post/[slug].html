@@ -1,0 +1,11 @@
+{{define "title"}}{{.Data.Title}} | {{t "site.name"}}{{end}}
+{{define "description"}}{{.Data.Title}}{{end}}
+{{define "body"}}{{template "header" .}}
+<main>
+  <article>
+    <h1>{{.Data.Title}}</h1>
+    <p><time datetime="{{.Data.UpdatedAt.Format "2006-01-02"}}">{{.Data.UpdatedAt.Format "2006-01-02"}}</time></p>
+    <p>{{.Data.Body}}</p>
+  </article>
+</main>
+{{end}}

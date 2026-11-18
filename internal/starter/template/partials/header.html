@@ -1,0 +1,7 @@
+{{define "header"}}<header class="site-header">
+  <a class="brand" href="{{.Link "/"}}">{{t "site.name"}}</a>
+  <nav aria-label="{{t "nav.label"}}">
+    <a href="{{.Link "/"}}">{{t "nav.home"}}</a>
+    <a href="{{.Link "/about"}}">{{t "nav.about"}}</a>
+  </nav>
+</header>{{end}}

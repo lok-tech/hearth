@@ -1,0 +1,11 @@
+{
+  "baseURL": "https://example.com",
+  "defaultLang": "en",
+  "vite": {
+    "command": ["npx", "vite", "build"],
+    "devURL": "http://localhost:5173"
+  },
+  "dev": {
+    "addr": "127.0.0.1:3000"
+  }
+}

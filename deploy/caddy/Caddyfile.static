@@ -1,0 +1,30 @@
+# Static-only site (no Go server): serve `hearth build` output as plain files.
+# UNVERIFIED against a live Caddy: run deploy/verify.sh against it.
+{$SITE_ADDRESS:localhost} {
+	root * {$PUBLIC_ROOT:/srv/public}
+
+	route {
+		encode zstd gzip
+
+		@dotfile path_regexp dotfile (^|/)\.
+		respond @dotfile 404
+
+		@index_sub path_regexp index_sub ^/(.+)/index\.html$
+		redir @index_sub /{re.index_sub.1} 301
+		@index_root path /index.html
+		redir @index_root / 301
+		@slash path_regexp slash ^/(.+)/$
+		redir @slash /{re.slash.1} 301
+
+		header Cache-Control "public, max-age=0, must-revalidate"
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+
+		file_server {
+			canonical_uris false
+		}
+	}
+
+	handle_errors {
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
+}
