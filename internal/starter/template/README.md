@@ -4,8 +4,7 @@ A Hearth site. Static pages are rendered at build time; server-rendered pages us
 
 ```
 npm install
-npm run vite      # terminal 1: Vite dev server (assets, HMR)
-npm run dev       # terminal 2: pages rendered from src with *.mock.json data
+npm run dev       # one server: pages from src with *.mock.json data, assets built by Vite in watch mode, the browser reloads on every change
 npm run check     # validate routes, data, locales; trial-render every page
 npm run build     # vite build + prerender -> dist/public, dist/templates, dist/manifest.json
 ```

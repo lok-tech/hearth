@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "vite": "vite",
     "dev": "hearth dev",
     "build": "hearth build",
     "check": "hearth check",

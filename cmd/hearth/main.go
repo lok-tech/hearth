@@ -112,6 +112,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case cmd == "dev" && *live:
 			h, err = dev.NewLive(cfg.Dev.Server)
+		case cmd == "dev" && cfg.Vite != nil && cfg.Vite.DevURL == "":
+			// One port: `vite build --watch` into a cache directory, served together with the pages.
+			var stop func()
+			h, stop, err = dev.NewWatch(context.Background(), *site, cfg, stderr)
+			if err == nil {
+				defer stop() // never leave the Vite watcher running when the server ends or fails to start
+			}
 		case cmd == "dev":
 			h, err = dev.NewMock(*site, cfg)
 		default:

@@ -387,7 +387,26 @@ func runVite(ctx context.Context, site, pubDir string, v *config.ViteConfig, ass
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("hearth: vite build failed: %w", err)
 	}
-	b, err := os.ReadFile(filepath.Join(pubDir, ".vite", "manifest.json"))
+	m, err := LoadViteOutput(pubDir)
+	if err != nil {
+		return nil, err
+	}
+	if assetBase != "" {
+		m.PrefixURLs(assetBase)
+	}
+	// Build-internal files are not deployed.
+	for _, d := range []string{".vite", ".hearth"} {
+		if err := os.RemoveAll(filepath.Join(pubDir, d)); err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
+}
+
+// LoadViteOutput reads what a Vite run left in dir: .vite/manifest.json, plus the image manifest
+// .hearth/images.json written by the hearth/vite plugin. It deletes nothing and applies no base.
+func LoadViteOutput(dir string) (*manifest.Manifest, error) {
+	b, err := os.ReadFile(filepath.Join(dir, ".vite", "manifest.json"))
 	if err != nil {
 		return nil, fmt.Errorf("hearth: vite produced no .vite/manifest.json: %w", err)
 	}
@@ -395,8 +414,7 @@ func runVite(ctx context.Context, site, pubDir string, v *config.ViteConfig, ass
 	if err != nil {
 		return nil, err
 	}
-	// The image step (hearth/vite) leaves its manifest in .hearth/images.json.
-	if ib, err := os.ReadFile(filepath.Join(pubDir, ".hearth", "images.json")); err == nil {
+	if ib, err := os.ReadFile(filepath.Join(dir, ".hearth", "images.json")); err == nil {
 		var imgs map[string][]manifest.ImageFile
 		if err := json.Unmarshal(ib, &imgs); err != nil {
 			return nil, fmt.Errorf("hearth: .hearth/images.json: %w", err)
@@ -406,15 +424,6 @@ func runVite(ctx context.Context, site, pubDir string, v *config.ViteConfig, ass
 				return nil, fmt.Errorf("hearth: image %q has no files", name)
 			}
 			m.Images[name] = files
-		}
-	}
-	if assetBase != "" {
-		m.PrefixURLs(assetBase)
-	}
-	// Build-internal files are not deployed.
-	for _, d := range []string{".vite", ".hearth"} {
-		if err := os.RemoveAll(filepath.Join(pubDir, d)); err != nil {
-			return nil, err
 		}
 	}
 	return m, nil

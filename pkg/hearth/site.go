@@ -76,7 +76,8 @@ type Options struct {
 
 	// Dev never reads or writes the cache, and manifest.json may be missing.
 	Dev bool
-	// DevAssetURL is the Vite dev server; in Dev, {{asset "x"}} resolves to DevAssetURL + "/x".
+	// DevAssetURL is the Vite dev server; in Dev, {{asset "x"}} resolves to DevAssetURL + "/x" and
+	// templates see .Dev == true. Without it, Dev uses the bundle manifest like a production site.
 	DevAssetURL string
 	// LenientAssets makes unknown assets and images resolve to placeholders instead of failing
 	// the render (used by `hearth check`, which runs without a Vite build).
@@ -440,7 +441,7 @@ func (s *Site) pageData(lang, neutral string, params map[string]string, data any
 	}
 	_, prefix := s.urls.Location(lang)
 	return render.PageData{Lang: lang, Dir: dir, Params: params, Data: data, Canonical: canonical,
-		Alternates: s.urls.Alternates(neutral), Prefix: prefix, Dev: s.opt.Dev}
+		Alternates: s.urls.Alternates(neutral), Prefix: prefix, Dev: s.opt.Dev && s.opt.DevAssetURL != ""}
 }
 
 func (s *Site) write(w http.ResponseWriter, r *http.Request, status int, body []byte, noindex bool) {

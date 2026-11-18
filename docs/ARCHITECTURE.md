@@ -153,7 +153,7 @@ URL) and `Manifest.Lenient` (placeholder for unknown assets) are runtime-only (`
   `Fallback` is the Vite proxy; `DevAssetURL` is the Vite URL.
 - `live`: reverse proxy to `dev.server`. `preview`: a file from `dist/public` (mapped with `cache.RelPath`), else
   the same proxy.
-- Vite is **not** started by the CLI; run it separately (`npm run vite`).
+- `hearth dev` starts Vite itself in **watch mode** (`dev.NewWatch`): `vite build --watch` into `node_modules/.cache/hearth-dev`, one address for pages and assets, the latest Vite manifest overlaid onto the source bundle per request (last good one kept while a rebuild empties the directory), `.vite`/`.hearth` never served. No HMR, but **live reload** (`internal/dev/reload.go`): a poller fingerprints `pages layouts partials locales data public` plus the Vite manifest's mtime (`src/` is left out so the reload follows the rebuild, never precedes it), and after a 150 ms settle it signals browsers over server-sent events at `/__hearth/reload`; a small script is injected before `</body>` of HTML responses only. Setting `vite.devURL` selects the older proxy mode instead (run `vite` yourself; `{{asset}}` points at it and templates see `.Dev`).
 
 ## Files that look odd on purpose
 

@@ -28,7 +28,7 @@ type PageData struct {
 	Canonical  string
 	Alternates map[string]string // lang -> absolute URL, for hreflang
 	Prefix     string            // URL prefix of this language ("/he", or "" for default/other i18n modes)
-	Dev        bool              // true under `hearth dev` (Vite serves assets, no hashed CSS file)
+	Dev        bool              // true under `hearth dev` with a Vite dev server (it serves assets, no hashed CSS file)
 }
 
 // Link returns path inside the current language: Link "/about" -> "/he/about",

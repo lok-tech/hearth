@@ -93,9 +93,15 @@ func within(root, p string) bool {
 // object mapping the parameter value to the page data, with "*" as the fallback. Paths that
 // match no page go to the Vite dev server when configured (HMR assets).
 func NewMock(siteDir string, cfg *config.Config) (http.Handler, error) {
+	return newMock(siteDir, cfg, nil)
+}
+
+// newMock is NewMock with an optional watcher: when set, assets come from its Vite build output
+// (hashed files, served by this handler) instead of a Vite dev server.
+func newMock(siteDir string, cfg *config.Config, wa *watcher) (http.Handler, error) {
 	var vite http.Handler
 	devBase := ""
-	if cfg.Vite != nil && cfg.Vite.DevURL != "" {
+	if wa == nil && cfg.Vite != nil && cfg.Vite.DevURL != "" {
 		u, err := parseProxyTarget(cfg.Vite.DevURL, "vite.devURL")
 		if err != nil {
 			return nil, err
@@ -108,8 +114,12 @@ func NewMock(siteDir string, cfg *config.Config) (http.Handler, error) {
 	}
 	src := os.DirFS(siteDir)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var bundle fs.FS = src
+		if wa != nil {
+			bundle = overlay{FS: src, manifest: wa.manifestJSON()}
+		}
 		opt := hearth.Options{
-			Bundle:      src,
+			Bundle:      bundle,
 			CacheDir:    cacheDir,
 			BaseURL:     cfg.BaseURL,
 			DefaultLang: cfg.DefaultLang,
@@ -120,6 +130,9 @@ func NewMock(siteDir string, cfg *config.Config) (http.Handler, error) {
 		}
 		if vite != nil {
 			opt.Fallback = vite
+		}
+		if wa != nil {
+			opt.Fallback = wa.static()
 		}
 		site, err := hearth.New(opt)
 		if err != nil {

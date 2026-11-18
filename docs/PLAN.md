@@ -162,7 +162,7 @@ Open items, roughly in order of value:
 4. **`Site.Warm` does not set a `Host`**, so it cannot warm host-mode languages; `Prerender` does. Document or fix.
 5. **Pruning race.** A render that began before a flip can recreate its (pruned) version directory when it writes.
    Harmless but leaks a directory until the next prune.
-6. **`hearth dev` does not start Vite**; run `npm run vite` in a second terminal. The per-request `Site` rebuild in
+6. **`hearth dev` runs Vite in watch mode itself** (one port, live reload, no HMR) unless `vite.devURL` is set, which keeps the proxy mode where you run `vite` in a second terminal. The per-request `Site` rebuild in
    `mock` mode has not been measured on a large site.
 7. **404/410 templates** and **responsive image widths** (`srcset`).
 8. **Publish**: check the npm names, then the platform packages first and `hearth` last (`scripts/build-npm.mjs`).
