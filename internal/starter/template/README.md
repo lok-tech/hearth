@@ -13,7 +13,7 @@ npm run build     # vite build + prerender -> dist/public, dist/templates, dist/
 
 | Path | What |
 |---|---|
-| `pages/` | File path is the route. `about.html` -> `/about`, `post/[id].html` -> `post/{id}`, `about.he.html` overrides one language |
+| `pages/` | File path is the route. `about.html` -> `/about`, `post/[id].html` -> `post/{id}`, `about.he.html` overrides one language; `404.html` / `410.html` are the error pages (not routes), built to `dist/public/404.html` |
 | `layouts/base.html` | The one layout. Blocks: `title`, `description`, `head`, `body` (canonical and hreflang are in the layout) |
 | `partials/` | `{{define "name"}}` snippets, available in every page |
 | `locales/` | `en.json`, `he.json`: `{{t "key"}}`; plurals use CLDR suffixes (`items.one`, `items.other`). A missing key fails the build |
@@ -21,7 +21,7 @@ npm run build     # vite build + prerender -> dist/public, dist/templates, dist/
 | `src/` | `entry.ts`, CSS, `images/` |
 | `public/` | Copied as-is to the site root |
 
-Template helpers: `t`, `plural`, `asset`, `picture`, `json`, `data`. Use `{{.Link "/about"}}` for internal links so they stay in the current language (`/he/about` in Hebrew).
+Template helpers: `t`, `plural`, `asset`, `entry`, `picture`, `json` (for `<script type="application/json">` and `data-*` attributes), `data`. Use `{{.Link "/about"}}` for internal links so they stay in the current language (`/he/about` in Hebrew).
 
 ## Images
 
@@ -33,7 +33,8 @@ For the image that is the largest paint above the fold, write the `<img>` yourse
 
 - One `<h1>` per page, a unique `<title>` and description per page and language.
 - Pages must work without JavaScript; `src/entry.ts` only enhances.
-- Every asset comes from the manifest (`asset`), so it is hashed and cacheable forever. Never hard-code `/assets/...`.
-- No render-blocking chains: no CSS `@import`, one stylesheet per page, scripts as `type="module"`.
+- Every asset comes from the manifest (`entry`, `asset`), so it is hashed and cacheable forever. Never hard-code `/assets/...`.
+- `{{entry "src/entry.ts"}}` in the layout emits every stylesheet, `modulepreload` hint and the module script of an entry. A page can load another entry from the `head` block (`{{entry "src/game.ts"}}`, after adding it to the `input` of `vite.config.ts`).
+- No render-blocking chains: no CSS `@import`, scripts as `type="module"`.
 - Images always carry `width`/`height` and `alt`.
 - Fonts: see the note at the top of `src/styles/main.css`.

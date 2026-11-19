@@ -98,8 +98,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "built %d pages into %s\n", len(rep.Pages), rep.Out)
 	case "check":
-		errs := build.Check(*site, cfg)
-		for _, e := range errs {
+		var errs []error
+		for _, e := range build.Check(*site, cfg) {
+			if build.NeedsProgram(e) {
+				// Not a defect: the page calls a function only your Go program provides.
+				fmt.Fprintln(stderr, "  ~ needs your Go program, not checked:", e)
+				continue
+			}
+			errs = append(errs, e)
 			fmt.Fprintln(stderr, "  -", e)
 		}
 		if len(errs) > 0 {

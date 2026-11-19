@@ -1,6 +1,7 @@
 {
   "baseURL": "http://localhost:8080",
   "defaultLang": "en",
+  "ssr": ["/"],
   "dev": {
     "server": "http://localhost:8080",
     "addr": "127.0.0.1:3000"

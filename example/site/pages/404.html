@@ -1,0 +1,7 @@
+{{define "title"}}{{t "notfound.title"}}{{end}}
+{{define "body"}}{{template "header" .}}
+<main>
+  <h1>{{t "notfound.heading"}}</h1>
+  <p><a href="{{.Link "/"}}">{{t "notfound.home"}}</a></p>
+</main>
+{{end}}

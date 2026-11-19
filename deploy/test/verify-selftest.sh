@@ -6,6 +6,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 verify="$here/../verify.sh"
 export CURL="$here/fake-curl.sh"
 export VERIFY_DYNAMIC=/post/1 VERIFY_DYNAMIC_MISSING=/post/nope
+export VERIFY_404_TEXT='Page not found' VERIFY_UNICODE=/letter/%D7%90
 failures=0
 
 out=$("$verify" http://fake.test 2>&1)
@@ -19,7 +20,7 @@ fi
 # mode -> text that must appear on a FAIL line
 for pair in "slash:trailing slash" "index:/index.html suffix" "dotfile:dotfile" "traversal:traversal" \
   "asset:asset Cache-Control" "html-cache:HTML Cache-Control" "etag:ETag" "query:query string" \
-  "dynamic:dynamic page" "404-immutable:404 caching"; do
+  "dynamic:dynamic page" "404-immutable:404 caching" "no-404-body:404 body" "unicode:non-ASCII path"; do
   mode=${pair%%:*} want=${pair#*:}
   out=$(FAKE_BROKEN=$mode "$verify" http://fake.test 2>&1)
   code=$?

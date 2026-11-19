@@ -71,12 +71,38 @@ site/
   hearth.config.json
 ```
 
-Template helpers: `t`, `plural`, `asset`, `picture`, `json` (safe for `<script type="application/json">`),
+Template helpers: `t`, `plural`, `asset`, `entry`, `picture`, `json` (safe for `<script type="application/json">` and for an attribute such as `data-x="{{json .X}}"`),
 `data`, and `.Link "/about"` for links that stay in the current language. A missing translation key
 fails the build.
 
+`{{entry "src/site.ts"}}` in the layout's `<head>` loads a Vite entry: a stylesheet link for every CSS file
+(including CSS of shared chunks), a `modulepreload` hint per imported chunk and the module script, all with
+hashed URLs (and `assetBase`). Under a Vite dev server it emits the Vite client and the script. Use `{{asset}}`
+for single files such as a favicon.
+
 `hearth.config.json` covers `baseURL`, `defaultLang`, `i18n` (path prefix, subdomain or domain),
-`assetBase` (S3/CDN), `vite`, `collections` and `dev`. Paths are identical in every language.
+`assetBase` (S3/CDN), `vite`, `collections`, `ssr`, `funcs` and `dev`. Paths are identical in every language.
+
+Two settings are for sites that serve data from Go:
+
+- `"ssr": ["/candidates", "/"]` marks pages without a `[param]` as server-rendered. `hearth build` does not
+  write a file for them (it would shadow your handler); `hearth check` and `hearth dev` render them from
+  `pages/candidates.mock.json`; they stay in the sitemap. An entry that matches no page fails `check`.
+- `"funcs": ["num", "trend"]` names the template functions your Go program adds with `Options.Funcs`. The CLI
+  cannot run them, so it registers stubs: templates still parse and `hearth check` lists the pages that need
+  your program, but `hearth build` fails on a page that calls one. Build those sites with `hearth.Build`
+  (below).
+
+## Images
+
+- `public/` is copied to the site root as is: no hashing, no processing. Files that scripts load at runtime
+  (candidate photos, say) pass through untouched and are referenced by plain path.
+- `{{picture "name" "alt"}}` is for `src/images/**` (logos, illustrations): AVIF + WebP + the original, hashed,
+  with `width` and `height`.
+- One size per format (`maxWidth`, default 1600). `srcset` widths are not supported yet; responsive widths are
+  an open item in [docs/PLAN.md](docs/PLAN.md).
+
+Coming from Astro? See **[docs/MIGRATING-FROM-ASTRO.md](docs/MIGRATING-FROM-ASTRO.md)** (voters.co.il as the worked example).
 
 ## Serve it from your own Go server
 
@@ -91,6 +117,8 @@ site, err := hearth.New(hearth.Options{
 	BaseURL:  "https://example.com",
 })
 site.MustHandle("post/{slug}", loadPost) // a typo in the pattern fails at startup
+site.MustHandle("/candidates", loadList) // a page without a parameter must be in "ssr" in the config
+if err := site.Validate(); err != nil { log.Print(err) } // ssr pages with no handler answer 404
 go site.Subscribe(ctx, hearth.Poll(currentVersion, 5*time.Second))
 http.ListenAndServe(":8080", site)
 ```
@@ -104,6 +132,28 @@ A handler returns `(data, meta, err)`; the error decides the response:
 | `hearth.ErrGone` | 410 | no |
 | `hearth.Redirect(301, to)` | 301 | no |
 | any other error | 500 | no |
+
+A 404 or 410 renders `pages/404.html` / `pages/410.html` inside your layout when they exist (`.Status` is 404 or
+410; `404.he.html` overrides per language), `noindex` and never cached; otherwise the body is plain text. The
+same goes for a path that matches no page in a known language (`Options.Fallback` still wins there). They are
+templates, not routes: no sitemap entry, no prerender. `hearth build` writes the rendered 404 as
+`dist/public/404.html` (plus `<lang>/404.html` in prefix mode, `<host>/404.html` in host modes) for the web server.
+
+`Meta.NoIndex` sets the `X-Robots-Tag` header and `PageData.NoIndex`, which the layout turns into
+`<meta name="robots" content="noindex">` (the tag survives when the web server serves the cached file without
+Hearth). A static page declares the same with `{{define "robots"}}noindex{{end}}`.
+
+`Options.Funcs` adds template functions (`template.FuncMap`) next to the helpers; `New` rejects a name that
+shadows a helper or Go builtin and any value that is not a func with one result (or a result and an error).
+A returned error fails the render, so no partial page is cached. A binary that registers funcs builds its
+static pages with the same engine as the CLI: `hearth.Build(ctx, site, "dist/public")` (prerender, export,
+sitemap and robots). Pages in `ssr` are skipped; after data changes call `site.Invalidate("/candidates")`, which
+drops the page in every language.
+
+`Options.SitemapURLs` lists pages that only the server knows, each with an optional `LastMod` (a row's
+`updated_at`); `<lastmod>` is written only when you set it. Above 50,000 URLs or 50 MB `/sitemap.xml` becomes a
+sitemap index of `/sitemap-1.xml`, ... and `hearth.Build` writes the same files. `SitemapEntries` (paths only) is
+deprecated.
 
 A complete Postgres-backed server with HTTP-level tests is in [`example/`](example/).
 
@@ -150,7 +200,11 @@ things your responsibility.
 9. **Mount the cache read-only in the web server**, run the Go server as a non-root user that owns it, and
    put rate limiting in front. Misses are bounded (`MaxConcurrent`, `RenderTimeout`, one render per URL at a
    time) so a 404 flood cannot exhaust your database, but unrouted URLs still reach the Go server.
-10. **Dependencies:** the library uses the standard library and `golang.org/x/sync`. Nothing else.
+10. **Custom `Funcs` must be pure and safe for concurrent use.** Pages render in parallel and the output is
+    cached for everyone, so a function may not read the clock, a request, a cookie or shared mutable state. It
+    may return `template.HTML` only when it builds the markup itself from trusted numbers (`strconv`, a sparkline
+    from `[]float64`), never from a string a user wrote.
+11. **Dependencies:** the library uses the standard library and `golang.org/x/sync`. Nothing else.
 
 ## When not to use Hearth
 
@@ -160,12 +214,10 @@ things your responsibility.
   named pages, but there is no tag or dependency tracking: you name every affected page (lists, related
   pages). A site where rows change every few seconds would re-render continuously. It suits content that
   changes a few times an hour or less.
-- **Dynamic data on a page without a route parameter.** Handlers attach to `[param]` routes. A listing page
-  such as `/posts` needs its own parameter (`/posts/{page}`) or to be built from local JSON.
 - **Content pipelines.** There is no Markdown, no CMS integration, and local data is JSON only.
 - **Component-heavy front ends.** Hearth gives you Go templates plus Vite for assets, not islands or a
   component framework. Use Astro, Next or similar for that.
-- **Millions of URLs.** Every page is a file; mind inodes, disk, and sitemap limits.
+- **Millions of URLs.** Every page is a file; mind inodes and disk. Sitemaps split automatically at the protocol limits.
 - **A site that is not Go on the server** and needs SSR. Fully static sites work from any host, but SSR
   needs the Go package.
 
@@ -188,7 +240,7 @@ internal/         route, render, i18n, manifest, cache, config, build, dev, star
 npm/hearth/       npm wrapper and the hearth/vite image plugin; scripts/build-npm.mjs builds the platform packages
 example/          Postgres example, its own Go module
 deploy/           Caddy, nginx, compose, verify.sh
-docs/             README.md (index), PLAN.md, ARCHITECTURE.md, DEVELOPMENT.md, DEPLOY.md
+docs/             README.md (index), PLAN.md, ARCHITECTURE.md, DEVELOPMENT.md, DEPLOY.md, MIGRATING-FROM-ASTRO.md
 ```
 
 Dependency direction: `cmd -> internal tools (build, dev) -> pkg/hearth -> internal core`. Only `pkg/hearth`

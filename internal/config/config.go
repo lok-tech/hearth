@@ -19,7 +19,13 @@ type Config struct {
 	I18n        I18nConfig            `json:"i18n"`
 	Vite        *ViteConfig           `json:"vite"`
 	Collections map[string]Collection `json:"collections"` // pattern -> bound local collection
-	Dev         DevConfig             `json:"dev"`
+	// SSR lists parameterless pages ("/candidates", "/") whose data comes from a Go handler. They
+	// are not prerendered by `hearth build`, so no file shadows the handler.
+	SSR []string `json:"ssr"`
+	// Funcs names the custom template functions your Go program registers (hearth.Options.Funcs).
+	// The CLI registers stubs for them so templates still parse; calling one is an error.
+	Funcs []string  `json:"funcs"`
+	Dev   DevConfig `json:"dev"`
 }
 
 // I18nConfig selects how languages map to URLs. Paths are identical in every language.
@@ -94,6 +100,23 @@ func (c *Config) validate() error {
 		if col.Data == "" || col.Param == "" {
 			return fmt.Errorf("hearth.config.json: collection %q needs data and param", pat)
 		}
+	}
+	seen := map[string]bool{}
+	for _, p := range c.SSR {
+		if !strings.HasPrefix(p, "/") || p != "/" && strings.HasSuffix(p, "/") || strings.ContainsAny(p, "{}[]") {
+			return fmt.Errorf("hearth.config.json: ssr entry %q must be a page path such as \"/candidates\" (no parameters, no trailing slash)", p)
+		}
+		if seen[p] {
+			return fmt.Errorf("hearth.config.json: ssr entry %q is listed twice", p)
+		}
+		seen[p] = true
+	}
+	seen = map[string]bool{}
+	for _, n := range c.Funcs {
+		if n == "" || strings.ContainsAny(n, " \t.{}()\"") || seen[n] {
+			return fmt.Errorf("hearth.config.json: funcs entry %q must be a unique function name", n)
+		}
+		seen[n] = true
 	}
 	if b := c.AssetBase; b != "" {
 		if u, err := url.Parse(b); err != nil || u.RawQuery != "" || u.Fragment != "" ||

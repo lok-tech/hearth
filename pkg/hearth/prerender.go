@@ -24,6 +24,9 @@ type PrerenderFailure struct {
 
 func (f PrerenderFailure) Error() string { return fmt.Sprintf("%s [%s]: %v", f.Path, f.Lang, f.Err) }
 
+// Unwrap exposes the cause, so errors.Is and errors.As see through a failure.
+func (f PrerenderFailure) Unwrap() error { return f.Err }
+
 // PrerenderReport summarises a Prerender run.
 type PrerenderReport struct {
 	OK       int

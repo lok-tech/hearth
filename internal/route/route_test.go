@@ -86,3 +86,38 @@ func TestBadFiles(t *testing.T) {
 		t.Error("orphan override should fail")
 	}
 }
+
+func TestErrorTemplatesAreNotRoutes(t *testing.T) {
+	f := func() *fstest.MapFile { return &fstest.MapFile{Data: []byte("x")} }
+	fsys := testFS()
+	fsys["pages/404.html"] = f()
+	fsys["pages/404.he.html"] = f()
+	fsys["pages/410.html"] = f()
+	fsys["pages/docs/404.html"] = f() // in a folder: an ordinary page
+	r, err := Discover(fsys, "pages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range r.Patterns() {
+		if p == "404" || p == "410" {
+			t.Errorf("%q is a route", p)
+		}
+	}
+	if _, ok := r.Lookup("docs/404"); !ok {
+		t.Error("docs/404 should be a page")
+	}
+	if _, _, ok := r.Match("/404"); ok {
+		t.Error("/404 matches a page")
+	}
+	p, ok := r.ErrorPage(404)
+	if !ok || p.File != "pages/404.html" || p.Langs["he"] != "pages/404.he.html" {
+		t.Errorf("404 = %+v", p)
+	}
+	if p, ok := r.ErrorPage(410); !ok || p.File != "pages/410.html" {
+		t.Errorf("410 = %+v", p)
+	}
+	delete(fsys, "pages/404.html")
+	if _, err := Discover(fsys, "pages"); err == nil {
+		t.Error("404.he.html without 404.html should fail like any override")
+	}
+}

@@ -29,11 +29,13 @@ func newServer(t *testing.T) (*hearth.Site, *Memory, string) {
 		CacheDir:      dir,
 		BaseURL:       "https://blog.test",
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SSR:           []string{"/"}, // a built bundle carries this in manifest.json; the source tree does not
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	site.MustHandle("post/{slug}", postHandler(store))
+	site.MustHandle("/", indexHandler(store))
 	return site, store, dir
 }
 
@@ -306,3 +308,43 @@ type failingStore struct{}
 func (failingStore) Post(context.Context, string) (Post, error) { return Post{}, io.ErrUnexpectedEOF }
 func (failingStore) Slugs(context.Context) ([]string, error)    { return nil, io.ErrUnexpectedEOF }
 func (failingStore) Version(context.Context) (string, error)    { return "", io.ErrUnexpectedEOF }
+
+func TestHomePageListsPostsFromTheDatabaseAndInvalidateRefreshesIt(t *testing.T) {
+	site, store, dir := newServer(t)
+	w := get(site, "/")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `href="/post/static-speed"`) || strings.Contains(w.Body.String(), "new-post") {
+		t.Fatalf("home: %d %s", w.Code, w.Body)
+	}
+	if got := pagesOnDisk(t, dir); len(got) != 1 || got[0] != "index.html" {
+		t.Errorf("files = %v", got)
+	}
+	store.Put(Post{Slug: "new-post", Title: "New", Body: "x"})
+	get(site, "/he")
+	if strings.Contains(get(site, "/").Body.String(), "new-post") {
+		t.Fatal("the cached home page should not change by itself")
+	}
+	if err := site.Invalidate("/"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(get(site, "/").Body.String(), `href="/post/new-post"`) || !strings.Contains(get(site, "/he").Body.String(), `href="/he/post/new-post"`) {
+		t.Error("Invalidate(\"/\") did not refresh the home page in every language")
+	}
+}
+
+func TestMissingAndDeletedPostsUseTheBrandedErrorPage(t *testing.T) {
+	site, _, dir := newServer(t)
+	w := get(site, "/post/never-existed")
+	if w.Code != 404 || !strings.Contains(w.Body.String(), "<h1>Page not found</h1>") || !strings.Contains(w.Body.String(), `name="robots" content="noindex"`) {
+		t.Errorf("404: %d %s", w.Code, w.Body)
+	}
+	if w := get(site, "/he/nowhere"); w.Code != 404 || !strings.Contains(w.Body.String(), "הדף לא נמצא") {
+		t.Errorf("he 404: %d %s", w.Code, w.Body)
+	}
+	// no 410 template in the example: plain text, still 410
+	if w := get(site, "/post/retired-post"); w.Code != 410 {
+		t.Errorf("410: %d", w.Code)
+	}
+	if got := pagesOnDisk(t, dir); len(got) != 0 {
+		t.Errorf("error responses wrote files: %v", got)
+	}
+}

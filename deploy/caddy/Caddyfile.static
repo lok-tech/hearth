@@ -1,5 +1,5 @@
 # Static-only site (no Go server): serve `hearth build` output as plain files.
-# UNVERIFIED against a live Caddy: run deploy/verify.sh against it.
+# UNVERIFIED against a live Caddy (including the handle_errors block below): run deploy/verify.sh against it.
 {$SITE_ADDRESS:localhost} {
 	root * {$PUBLIC_ROOT:/srv/public}
 
@@ -24,7 +24,20 @@
 		}
 	}
 
+	# A missing path answers 404 with the branded page `hearth build` writes from pages/404.html
+	# (dist/public/404.html). Without that file, or for other errors, a plain-text body.
+	# Host i18n modes: use the root of that host's directory; prefix mode: one /404.html (default
+	# language), and /he/404.html etc. for the others if you route by prefix.
 	handle_errors {
-		respond "{err.status_code} {err.status_text}" {err.status_code}
+		@missing expression {err.status_code} == 404
+		handle @missing {
+			rewrite * /404.html
+			file_server {
+				status 404
+			}
+		}
+		handle {
+			respond "{err.status_code} {err.status_text}" {err.status_code}
+		}
 	}
 }

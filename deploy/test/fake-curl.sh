@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A pretend server for testing verify.sh without a network: stands in for curl.
-# FAKE_BROKEN=<mode> makes one behaviour wrong: slash | index | dotfile | traversal | asset | html-cache | etag | query | dynamic | 404-immutable
+# FAKE_BROKEN=<mode> makes one behaviour wrong: slash | index | dotfile | traversal | asset | html-cache | etag | query | dynamic | 404-immutable | no-404-body | unicode
 set -u
 method=GET url="" inm="" body=1
 args=("$@")
@@ -62,8 +62,16 @@ case "$bare" in
     [ "$broken" = dynamic ] && et="ETag: \"$RANDOM\""
     out 200 "${page_headers[0]}" "$et" ;;
   /post/nope) out 404 ;;
+  /letter/%D7%90)
+    et='ETag: "letter-alef"'
+    [ "$broken" = unicode ] && { out 404; exit 0; }
+    out 200 "${page_headers[0]}" "$et" ;;
   /healthz) out 200 ;;
   /hearth-verify-missing-page)
+    if [ "$body" = 1 ]; then
+      if [ "$broken" = no-404-body ]; then echo '404 Not Found'; else echo '<h1>Page not found</h1>'; fi
+      exit 0
+    fi
     [ "$broken" = 404-immutable ] && { out 404 'Cache-Control: public, max-age=31536000, immutable'; exit 0; }
     out 404 ;;
   *) out 404 ;;

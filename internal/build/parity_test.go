@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -32,6 +33,8 @@ func TestBuiltFilesEqualWhatAServerAnswers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			files := testutil.BaseSite()
 			files["hearth.config.json"] = cfgJSON
+			files["pages/404.html"] = `{{define "body"}}missing {{.Status}} {{t "hi"}} <a href="{{.Link "/"}}">home</a>{{end}}`
+			files["pages/410.html"] = `{{define "body"}}gone {{.Status}}{{end}}`
 			site := testutil.WriteSite(t, files)
 			cfg, err := config.Load(site)
 			if err != nil {
@@ -64,8 +67,12 @@ func TestBuiltFilesEqualWhatAServerAnswers(t *testing.T) {
 				DefaultLang: cfg.DefaultLang,
 				I18n:        hearth.I18n{Mode: cfg.I18n.Mode, Hosts: cfg.I18n.Hosts},
 				Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-				SitemapEntries: func(context.Context) ([]string, error) {
-					return postPaths, nil
+				SitemapURLs: func(context.Context) ([]hearth.SitemapEntry, error) {
+					out := make([]hearth.SitemapEntry, len(postPaths))
+					for i, p := range postPaths {
+						out[i] = hearth.SitemapEntry{Path: p}
+					}
+					return out, nil
 				},
 			})
 			if err != nil {
@@ -98,6 +105,19 @@ func TestBuiltFilesEqualWhatAServerAnswers(t *testing.T) {
 					urlPath = "/" + strings.TrimSuffix(inner, "/index.html")
 				case inner == "sitemap.xml" || inner == "robots.txt":
 					urlPath = "/" + inner
+				case inner == "404.html" || strings.HasSuffix(inner, "/404.html"):
+					// the error page answers a missing path with 404; the file is its body
+					urlPath = "/" + strings.TrimSuffix(inner, "404.html") + "no-such-page"
+					req := httptest.NewRequest(http.MethodGet, urlPath, nil)
+					req.Host = host
+					w := httptest.NewRecorder()
+					srv.ServeHTTP(w, req)
+					want, _ := os.ReadFile(p)
+					if w.Code != 404 || w.Body.String() != string(want) || !strings.Contains(string(want), "missing 404") {
+						t.Errorf("%s: server answered %d\n--- built\n%s\n--- server\n%s", rel, w.Code, want, w.Body)
+					}
+					compared++
+					return nil
 				default:
 					return nil // favicon and other plain static files
 				}
@@ -119,14 +139,77 @@ func TestBuiltFilesEqualWhatAServerAnswers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// 4 static + 4 post pages (2 languages), plus a sitemap and robots.txt per origin
-			want := 8 + 2
+			// 4 static + 4 post pages (2 languages), a sitemap and robots.txt per origin, and the
+			// 404.html files: root + he/ in prefix mode, one per host otherwise
+			want := 8 + 2 + 2
 			if hostMode {
-				want = 8 + 4
+				want = 8 + 4 + 2
 			}
 			if compared != want {
 				t.Errorf("compared %d files, want %d", compared, want)
 			}
 		})
+	}
+}
+
+// An ssr page is not built by the CLI, but a Go program can bake it: Prerender + Export with the
+// same handler and Funcs must write exactly what a Site answers to a visitor. The page calls a
+// custom function that the CLI only stubs, so this also shows the stub-built bundle runs fine
+// under the real functions.
+func TestSSRPageBakedEqualsServed(t *testing.T) {
+	files := testutil.BaseSite()
+	files["hearth.config.json"] = `{"baseURL":"https://x.test","ssr":["/candidates"],"funcs":["num"],"collections":{"post/{id}":{"data":"posts","param":"id"}}}`
+	files["pages/candidates.html"] = `{{define "body"}}{{range .Data.names}}<b>{{.}}</b>{{end}} {{num 1234567}}{{end}}`
+	site := testutil.WriteSite(t, files)
+	cfg, err := config.Load(site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(Options{SiteDir: site, Config: cfg}); err != nil {
+		t.Fatal(err)
+	}
+	newSite := func() *hearth.Site {
+		s, err := hearth.New(hearth.Options{
+			Bundle:      os.DirFS(filepath.Join(site, "dist", "templates")),
+			CacheDir:    t.TempDir(),
+			BaseURL:     cfg.BaseURL,
+			DefaultLang: cfg.DefaultLang,
+			Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Funcs: template.FuncMap{"num": func(n int) string {
+				s := fmt.Sprint(n)
+				for i := len(s) - 3; i > 0; i -= 3 {
+					s = s[:i] + "," + s[i:]
+				}
+				return s
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.MustHandle("/candidates", func(*http.Request, map[string]string) (any, hearth.Meta, error) {
+			return map[string]any{"names": []string{"Ann", "Bo"}}, hearth.Meta{}, nil
+		})
+		if err := s.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	baker, server := newSite(), newSite()
+	if rep := baker.Prerender(context.Background(), []string{"/candidates"}, 2); len(rep.Failures) > 0 {
+		t.Fatal(rep.Failures)
+	}
+	out := t.TempDir()
+	if err := baker.Export(out); err != nil {
+		t.Fatal(err)
+	}
+	for urlPath, file := range map[string]string{"/candidates": "candidates/index.html", "/he/candidates": "he/candidates/index.html"} {
+		w := testutil.Get(server, urlPath)
+		if w.Code != 200 {
+			t.Fatalf("%s answered %d", urlPath, w.Code)
+		}
+		want := testutil.Read(t, out, file)
+		if w.Body.String() != want || !strings.Contains(want, "<b>Ann</b><b>Bo</b> 1,234,567") {
+			t.Errorf("%s differs:\n--- baked\n%s\n--- served\n%s", file, want, w.Body)
+		}
 	}
 }

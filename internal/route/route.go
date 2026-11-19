@@ -27,14 +27,36 @@ func (p *Page) URL() string { return "/" + p.Pattern }
 
 // Table is the set of pages discovered in a bundle.
 type Table struct {
-	pages map[string]*Page
+	pages  map[string]*Page
+	status map[int]*Page // error templates (pages/404.html, pages/410.html); not routes
+}
+
+// ErrorCodes are the statuses that can have a template: pages/404.html and pages/410.html.
+var ErrorCodes = []int{404, 410}
+
+// ErrorPage returns the template for an error status. It is not a route: it never matches a
+// request, is not in Patterns and not in any sitemap.
+func (r *Table) ErrorPage(code int) (*Page, bool) {
+	p, ok := r.status[code]
+	return p, ok
+}
+
+// errorCode reports the status of a top-level pages/404.html or pages/410.html (also with a
+// language suffix, 404.he.html). A file of that name in a sub-folder is an ordinary route.
+func errorCode(pattern string) int {
+	for _, c := range ErrorCodes {
+		if pattern == fmt.Sprint(c) {
+			return c
+		}
+	}
+	return 0
 }
 
 // Discover walks pagesDir in fsys. File path is the route:
 // about.html -> about, index.html -> "", post/[id].html -> post/{id}.
 // "name.<lang>.html" registers a language override of "name.html".
 func Discover(fsys fs.FS, pagesDir string) (*Table, error) {
-	r := &Table{pages: map[string]*Page{}}
+	r := &Table{pages: map[string]*Page{}, status: map[int]*Page{}}
 	type found struct{ file, pattern, lang string }
 	var all []found
 	err := fs.WalkDir(fsys, pagesDir, func(p string, d fs.DirEntry, err error) error {
@@ -60,6 +82,10 @@ func Discover(fsys fs.FS, pagesDir string) (*Table, error) {
 		if f.lang != "" {
 			continue
 		}
+		if c := errorCode(f.pattern); c != 0 {
+			r.status[c] = &Page{Pattern: f.pattern, File: f.file, Langs: map[string]string{}}
+			continue
+		}
 		if other, dup := r.pages[f.pattern]; dup {
 			return nil, fmt.Errorf("duplicate route %q: %s and %s", "/"+f.pattern, other.File, f.file)
 		}
@@ -70,6 +96,9 @@ func Discover(fsys fs.FS, pagesDir string) (*Table, error) {
 			continue
 		}
 		pg, ok := r.pages[f.pattern]
+		if c := errorCode(f.pattern); c != 0 {
+			pg, ok = r.status[c]
+		}
 		if !ok {
 			return nil, fmt.Errorf("%s: language override has no base template", f.file)
 		}

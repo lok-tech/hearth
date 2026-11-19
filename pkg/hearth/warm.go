@@ -85,7 +85,7 @@ loop:
 }
 
 // WarmPaths lists what a warm run covers by default: static pages plus any
-// SitemapEntries from Options. Dynamic pages are only warmed if listed there.
+// SitemapURLs/SitemapEntries from Options. Dynamic pages are only warmed if listed there.
 func (s *Site) WarmPaths(ctx context.Context) ([]string, error) {
 	var out []string
 	for _, pat := range s.routes.Patterns() {
@@ -94,12 +94,12 @@ func (s *Site) WarmPaths(ctx context.Context) ([]string, error) {
 			out = append(out, pg.URL())
 		}
 	}
-	if s.opt.SitemapEntries != nil {
-		extra, err := s.opt.SitemapEntries(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("hearth: warm: %w", err)
-		}
-		out = append(out, extra...)
+	extra, err := s.sitemapEntries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("hearth: warm: %w", err)
+	}
+	for _, e := range extra {
+		out = append(out, e.Path)
 	}
 	sort.Strings(out)
 	return out, nil

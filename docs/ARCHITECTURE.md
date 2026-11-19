@@ -36,7 +36,7 @@ Dependency direction: `cmd/hearth -> internal/{build,dev,starter,config} -> pkg/
 | `internal/cache` | versioned dirs, atomic `current` symlink, `RelPath`, `ValidHost`, `ValidVersion` | none |
 | `internal/data` | read `data/*.json` safely | none |
 | `internal/fsutil` | `WriteFileAtomic` | none |
-| `internal/sitemap` | sitemap XML | none |
+| `internal/sitemap` | sitemap XML with `lastmod`, `Split` and `Index` for the 50,000 URL / 50 MB limits | none |
 | `internal/testutil` | shared test helpers (`WriteSite`, `BaseSite`, `Read`, `Get`) | none |
 | `internal/archtest` | tests about code shape | none (parses imports) |
 
@@ -48,14 +48,15 @@ Dependency direction: `cmd/hearth -> internal/{build,dev,starter,config} -> pkg/
    `data/*.json` is not rendering, which is why it lives in `internal/data`.
 2. **`pkg/hearth` must not import** `build`, `dev`, `starter`, `config` or `cmd`.
 3. **Parity.** Build a site, serve the built `dist/templates` from an independently constructed `Site` (its own
-   data handler) and require every built `index.html`, `sitemap.xml` and `robots.txt` to equal the server's answer.
-   Runs in prefix and subdomain modes.
+   data handler) and require every built `index.html`, `404.html`, `sitemap.xml` and `robots.txt` to equal the server's answer.
+   Runs in prefix and subdomain modes. A second test bakes an `ssr` page (with a custom func) through `Prerender` +
+   `Export` and requires it to equal what a `Site` with the same handler serves.
 
 Both rules were verified by breaking them on purpose. When you add a guard, do the same.
 
 ## A request through `Site` (`pkg/hearth/site.go`)
 
-`ServeHTTP` answers `/healthz`, `/robots.txt`, `/sitemap.xml`, rejects non-GET/HEAD with 405, then calls
+`ServeHTTP` answers `/healthz`, `/robots.txt`, `/sitemap.xml` (and `/sitemap-N.xml` parts), rejects non-GET/HEAD with 405, then calls
 `resolve(r)`, which is also what `Prerender` calls:
 
 1. `urls.Resolve(r.Host, r.URL.Path)` gives `(lang, neutralPath)`. Prefix mode strips `/<lang>`; host modes map
@@ -65,17 +66,22 @@ Both rules were verified by breaking them on purpose. When you add a guard, do t
 4. Unless `Dev`: read `cache.Path(host, r.URL.Path)`. A file is a hit (the cache key is the *requested* path, so
    prefix mode includes `/he/...`; host modes use the configured host directory and the neutral path).
 5. Otherwise `singleflight` on `version|host|path`, then `render`: match route, take a semaphore slot
-   (`MaxConcurrent`, with `RenderTimeout`), call the handler for a `[param]` page, build `PageData` with
+   (`MaxConcurrent`, with `RenderTimeout`), call the page's handler (every `[param]` page, and every `ssr` page; a parameterless page that is not in `ssr` has none), build `PageData` with
    `pageData(...)`, render, and write the file **under the version that was active when the render began**
    (a flip during a render cannot leak stale content into the new version). Only 200s are written.
 6. Handler outcomes: `ErrNotFound` 404 (message kept in `note`, shown only in Dev), `ErrGone` 410,
    `*RedirectError` (301, 302, 307, 308 only), anything else is a 500 and is not cached.
 7. `rendered.unmatched` (no page, unknown host, unsafe path) goes to `Options.Fallback` when set; a matched
    page that is not found does not.
+8. Any 404 or 410 that is not a redirect or a Fallback goes through `writeError`: `errorBody(lang, status)`
+   renders `pages/404.html` / `410.html` (not routes: `route.Table.ErrorPage`) with `Status` and `NoIndex` set,
+   `no-store`, never cached; plain text when the template is missing, the host is unknown or the render fails.
+   `hearth.Build` writes `errorBody(lang, 404)` as `404.html` through the same function.
 
 `pageData(lang, neutral, params, data, meta)` is the **single place** that decides what a template sees:
 `Lang`, `Dir` (`i18n.IsRTL`), `Params`, `Data`, `Canonical` (`meta.Canonical`, else `urls.Abs` when there is an
-origin), `Alternates` (`urls.Alternates`, nil for one language or no `BaseURL`), `Prefix`, `Dev`.
+origin), `Alternates` (`urls.Alternates`, nil for one language or no `BaseURL`), `Prefix`, `Status` (200), `NoIndex` (`meta.NoIndex`), `Dev`.
+The renderer folds a page's `{{define "robots"}}noindex{{end}}` into `NoIndex`, so the layout emits one tag either way.
 
 ### Language and URL rules (`internal/i18n/urls.go`)
 
@@ -110,12 +116,13 @@ In order: resolve and sanity-check the output dir (refuses the site dir, its par
 site) -> wipe `dist/public` and `dist/templates` -> copy `public/` -> run Vite if configured (`runVite`) ->
 stamp `manifest.Version` (hash of the site's file names, sizes and mtimes) and write `dist/manifest.json` ->
 copy `layouts partials pages(*.html only) locales data` to `dist/templates` plus `manifest.json` ->
-`planPages` -> `newSite` over `dist/templates` with a throwaway cache -> `Prerender` -> fail on any failure
-(first error plus a count) -> `Export` into `dist/public` -> if `baseURL` is set, save the `Site`'s own answers
-for `/sitemap.xml` and `/robots.txt` once per origin (a root, or one directory per language host; an existing
-`robots.txt` from `public/` wins).
+`planPages` -> `newSite` over `dist/templates` with a throwaway cache -> `hearth.Build` (`pkg/hearth/build.go`):
+`Prerender` of every parameterless page that is not in `ssr` plus the `SitemapURLs`/`SitemapEntries` (the collection pages) -> fail
+on any failure (first error plus a count) -> `Export` into `dist/public` -> if `baseURL` is set, save the `Site`'s own
+answers for `/sitemap.xml` and `/robots.txt` once per origin (a root, or one directory per language host; an existing
+`robots.txt` from `public/` wins). The `ssr` list is validated against the routes before anything is written.
 
-- `planPages` lists static pages and each entry of every configured collection. Collection values must be
+- `planPages` lists static pages (not `ssr` pages: their handlers answer, so no file may exist) and each entry of every configured collection. Collection values must be
   non-empty, unique, free of `/ \ ? # % NUL`, and not `.` or `..`. Each collection becomes a `hearth.Handler`
   over the JSON entries (the build's stand-in for a database).
 - `Check` uses the same `planPages` and `newSite` (with `LenientAssets`) over the source tree, and adds checks
@@ -126,13 +133,19 @@ for `/sitemap.xml` and `/robots.txt` once per origin (a root, or one directory p
 `runVite` runs `vite.command` (an argv, no shell) in the site dir with `--outDir <dist/public> --emptyOutDir
 --manifest` (+ `--base <assetBase>/` when `assetBase` is set). It reads `public/.vite/manifest.json`:
 
-- `assets["src/entry.ts"] = "/assets/entry-<hash>.js"`; an entry's first CSS file is `assets["src/entry.ts.css"]`.
+- `assets["src/entry.ts"] = "/assets/entry-<hash>.js"`; an entry's first CSS file is `assets["src/entry.ts.css"]`
+  (kept so `{{asset}}` is unchanged; it is not the whole story, use `entries`).
+- `entries["src/entry.ts"] = {js, css[], preload[]}` for every manifest key with `isEntry`: `js` is the script
+  (empty for a CSS-only entry), `css` is every stylesheet in cascade order (statically imported chunks first,
+  depth first, then the entry's own), `preload` the statically imported chunks. Resolution walks the whole Vite
+  manifest, is cycle-safe, lists each file once and is stable (sorted keys, first-seen order). Dynamic imports are
+  not followed. An `imports` key missing from the manifest fails the build.
 - the image plugin leaves `public/.hearth/images.json`: `name -> [{url,type,width,height}]`, fallback **last**.
 - `assetBase` is prefixed onto every URL. Then `.vite/` and `.hearth/` are deleted from `public/`.
 
 ### `manifest.json` and bundle format
 
-`{ "format": 1, "assets": {...}, "images": {...}, "version": "<build id>" }`. `manifest.BundleFormat` must match
+`{ "format": 3, "assets": {...}, "entries": {...}, "images": {...}, "version": "<build id>", "ssr": ["/candidates"] }` (`ssr` lists the parameterless pages served by handlers; format 2 added it, format 3 added `entries` for `{{entry}}`). `manifest.BundleFormat` must match
 or `Parse` fails loudly. Bump it when the bundle layout or manifest meaning changes. `Manifest.DevBase` (Vite dev
 URL) and `Manifest.Lenient` (placeholder for unknown assets) are runtime-only (`json:"-"`).
 
@@ -142,14 +155,23 @@ URL) and `Manifest.Lenient` (placeholder for unknown assets) are runtime-only (`
   file overrides them with `{{define}}`. All `partials/*.html` are parsed into every page's set. A page is parsed
   once per `(file, lang)` and cached; `about.he.html` replaces `about.html` for `he`.
 - `missingkey=error`: a missing data key or translation fails the render.
-- Helpers: `t`, `plural`, `asset`, `picture(name, alt)`, `json`, `data`. `PageData.Link(path)` is a method.
-- `{{if .Dev}}` is how the layout switches between the Vite client (dev) and the hashed CSS link (build).
+- Helpers: `t`, `plural`, `asset`, `entry`, `picture(name, alt)`, `json`, `data`, plus `Options.Funcs`. `PageData.Link(path)` is a method.
+- `Options.Funcs` is validated in `render.New` (`checkFuncs`): no shadowing of a helper or Go builtin, valid name, a
+  func with one result or result plus error. The CLI cannot run your Go code, so config `funcs` names become stubs
+  (`internal/mock.Stubs`) that parse but fail when called; `Check` reports such pages with `build.NeedsProgram`.
+- `{{entry "src/site.ts"}}` (`Manifest.Entry`, returns `template.HTML`) emits a `<link rel="stylesheet">` per CSS file,
+  a `<link rel="modulepreload">` per imported chunk and the `<script type="module">`, all from `entries`, escaped and
+  with `assetBase` already prefixed. With a Vite dev server (`DevBase`) it emits the Vite client and the module
+  script instead, so a layout needs no `{{if .Dev}}`. Lenient mode (`check`) resolves an unknown entry to a bare
+  script placeholder; anywhere else an unknown entry fails the render. Several entries can be used on one page
+  (a layout entry plus a page entry from a block): a CSS file shared by two calls is not de-duplicated across calls.
+- `{{if .Dev}}` remains available for layouts that still want to branch on the dev server.
 - `html/template` escapes by context; there is deliberately no helper that returns raw HTML from user data.
 
 ## `hearth dev`
 
 - `mock`: `dev.NewMock` builds a **new** `Site` on every request (`Dev: true`, bundle = source tree) so edits show
-  immediately. Dynamic pages get a handler reading `pages/<path>.mock.json` (`{ "<param value>": data, "*": data }`).
+  immediately. Dynamic pages get a handler reading `pages/<path>.mock.json` (`{ "<param value>": data, "*": data }`); `ssr` pages read the whole file as their data (`internal/mock`, shared with `check`).
   `Fallback` is the Vite proxy; `DevAssetURL` is the Vite URL.
 - `live`: reverse proxy to `dev.server`. `preview`: a file from `dist/public` (mapped with `cache.RelPath`), else
   the same proxy.

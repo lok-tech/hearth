@@ -4,5 +4,8 @@
   "nav.first": "הפוסט הראשון",
   "home.title": "בלוג Hearth",
   "home.heading": "פוסטים מבסיס הנתונים",
-  "home.intro": "כל פוסט למטה מרונדר משורה ב-Postgres בביקור הראשון, ואחר כך מוגש מקובץ."
+  "home.intro": "כל פוסט למטה מרונדר משורה ב-Postgres בביקור הראשון, ואחר כך מוגש מקובץ.",
+  "notfound.title": "לא נמצא | בלוג Hearth",
+  "notfound.heading": "הדף לא נמצא",
+  "notfound.home": "חזרה לפוסטים"
 }

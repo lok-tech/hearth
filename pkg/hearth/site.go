@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -85,8 +86,74 @@ type Options struct {
 	// Fallback answers requests that match no page (for example the Vite dev server).
 	Fallback http.Handler
 
-	// SitemapEntries adds language-neutral paths (such as "/post/42") to the sitemap.
+	// Funcs adds template functions next to the built-in helpers (t, plural, asset, entry, picture,
+	// json, data). A name may not shadow a helper or a Go template builtin, and each value must
+	// be a func with one result, or a result plus error; New reports violations. A returned
+	// error fails the render, so no partial page is ever cached.
+	//
+	// Functions must be pure and safe for concurrent use: pages render in parallel, and the
+	// same output is cached for everyone. A function may return template.HTML, which is not
+	// escaped: build it only from trusted values (numbers formatted with strconv), never from
+	// text a user wrote.
+	Funcs template.FuncMap
+
+	// SSR names parameterless pages ("/candidates") served by handlers, in addition to the
+	// ones the bundle's manifest lists. A production server needs nothing here: `hearth build`
+	// records the ssr list from hearth.config.json in manifest.json. It is for tools that run
+	// a Site over a source tree with no manifest (hearth check, hearth dev).
+	SSR []string
+
+	// SitemapURLs adds language-neutral pages (such as "/post/42") to the sitemap, each with an
+	// optional last modification time. It is also what Build prerenders and Warm warms for
+	// pages with route parameters. Return only dates you know (a row's updated_at); a zero
+	// LastMod writes no <lastmod>, and Hearth never invents one. The same path listed twice keeps
+	// the latest LastMod.
+	SitemapURLs func(ctx context.Context) ([]SitemapEntry, error)
+
+	// SitemapEntries adds language-neutral paths to the sitemap, without lastmod.
+	//
+	// Deprecated: use SitemapURLs. Both may be set; their paths are merged.
 	SitemapEntries func(ctx context.Context) ([]string, error)
+}
+
+// SitemapEntry is one extra sitemap page: a language-neutral path and when it last changed.
+type SitemapEntry struct {
+	Path    string
+	LastMod time.Time // zero: unknown, no <lastmod> is written
+}
+
+// sitemapEntries merges SitemapURLs and SitemapEntries into one list sorted by path, one entry per
+// path with the latest LastMod.
+func (s *Site) sitemapEntries(ctx context.Context) ([]SitemapEntry, error) {
+	var all []SitemapEntry
+	if s.opt.SitemapEntries != nil {
+		paths, err := s.opt.SitemapEntries(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range paths {
+			all = append(all, SitemapEntry{Path: p})
+		}
+	}
+	if s.opt.SitemapURLs != nil {
+		urls, err := s.opt.SitemapURLs(ctx)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, urls...)
+	}
+	latest := make(map[string]time.Time, len(all))
+	for _, e := range all {
+		if t, ok := latest[e.Path]; !ok || e.LastMod.After(t) {
+			latest[e.Path] = e.LastMod
+		}
+	}
+	out := make([]SitemapEntry, 0, len(latest))
+	for p, t := range latest {
+		out = append(out, SitemapEntry{Path: p, LastMod: t})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
 }
 
 // Counters are monotonic counters exposed for /healthz and metrics.
@@ -96,17 +163,19 @@ type Counters struct {
 
 // Site is an http.Handler that serves cached pages and renders on a miss.
 type Site struct {
-	opt       Options
-	routes    *route.Table
-	renderer  *render.Renderer
-	cache     *cache.Cache
-	urls      i18n.URLs
-	handlers  map[string]Handler
-	bundleVer string // manifest build id; cache versions are "<bundleVer>.<data version>"
-	flight    singleflight.Group
-	sem       *semaphore.Weighted
-	log       *slog.Logger
-	Counters  Counters
+	opt        Options
+	routes     *route.Table
+	renderer   *render.Renderer
+	cache      *cache.Cache
+	urls       i18n.URLs
+	handlers   map[string]Handler
+	ssr        map[string]bool           // parameterless page patterns served by handlers
+	bundleVer  string                    // manifest build id; cache versions are "<bundleVer>.<data version>"
+	sitemapMax struct{ urls, bytes int } // zero: the protocol's limits (50,000 URLs, 50 MB); tests lower them
+	flight     singleflight.Group
+	sem        *semaphore.Weighted
+	log        *slog.Logger
+	Counters   Counters
 }
 
 // New builds a Site from a bundle. Handlers are registered afterwards with Handle.
@@ -142,7 +211,7 @@ func New(o Options) (*Site, error) {
 		if !(o.Dev || o.LenientAssets) || !errors.Is(err, fs.ErrNotExist) {
 			return nil, err
 		}
-		man = &manifest.Manifest{Format: manifest.BundleFormat, Assets: map[string]string{}, Images: map[string][]manifest.ImageFile{}}
+		man = &manifest.Manifest{Format: manifest.BundleFormat, Assets: map[string]string{}, Entries: map[string]manifest.Entry{}, Images: map[string][]manifest.ImageFile{}}
 	}
 	if o.Dev || o.LenientAssets {
 		man.Lenient = true
@@ -177,7 +246,18 @@ func New(o Options) (*Site, error) {
 			return nil, err
 		}
 	}
-	rend, err := render.New(render.Options{FS: o.Bundle, Routes: routes, Manifest: man, Catalogs: cats, Data: dataFS})
+	ssr := map[string]bool{}
+	for _, p := range append(append([]string{}, man.SSR...), o.SSR...) {
+		pg, ok := routes.Lookup(p)
+		switch {
+		case !strings.HasPrefix(p, "/") || !ok:
+			return nil, fmt.Errorf("hearth: ssr page %q matches no template (have: %s)", p, strings.Join(routes.Patterns(), ", "))
+		case pg.IsDynamic():
+			return nil, fmt.Errorf("hearth: ssr page %q has route parameters; only parameterless pages are listed in ssr", p)
+		}
+		ssr[pg.Pattern] = true
+	}
+	rend, err := render.New(render.Options{FS: o.Bundle, Routes: routes, Manifest: man, Catalogs: cats, Data: dataFS, Funcs: o.Funcs})
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +277,7 @@ func New(o Options) (*Site, error) {
 		}
 		_ = pageCache.Prune(o.KeepVersions)
 	}
-	return &Site{opt: o, routes: routes, renderer: rend, cache: pageCache, urls: urls, handlers: map[string]Handler{},
+	return &Site{opt: o, routes: routes, renderer: rend, cache: pageCache, urls: urls, handlers: map[string]Handler{}, ssr: ssr,
 		bundleVer: bundleVer, sem: semaphore.NewWeighted(int64(o.MaxConcurrent)), log: o.Logger}, nil
 }
 
@@ -221,11 +301,33 @@ func newURLs(o Options, langs []string) (i18n.URLs, error) {
 
 // Handle registers an SSR handler by pattern. The pattern must match a discovered
 // template; a typo is reported here (and by `hearth check`) instead of at request time.
+//
+// A page without route parameters ("/candidates") takes a handler only when it is listed in the
+// config's ssr list: otherwise `hearth build` prerenders it and the file would shadow the handler.
 func (s *Site) Handle(pattern string, h Handler) error {
 	if err := s.routes.CheckHandler(pattern); err != nil {
 		return err
 	}
+	if pg, _ := s.routes.Lookup(pattern); !pg.IsDynamic() && !s.ssr[pg.Pattern] {
+		return fmt.Errorf("hearth: handler for %q would be shadowed by the prebuilt file: list %q in \"ssr\" in hearth.config.json and rebuild", pattern, pg.URL())
+	}
 	s.handlers[strings.TrimPrefix(pattern, "/")] = h
+	return nil
+}
+
+// Validate reports ssr pages that have no handler yet; they answer 404 until one is registered.
+// Call it after the Handle calls at startup and log or fail on the result.
+func (s *Site) Validate() error {
+	var missing []string
+	for pat := range s.ssr {
+		if _, ok := s.handlers[pat]; !ok {
+			missing = append(missing, "/"+pat)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		return fmt.Errorf("hearth: ssr pages without a handler (they answer 404): %s", strings.Join(missing, ", "))
+	}
 	return nil
 }
 
@@ -340,7 +442,11 @@ func (s *Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.robots(w, r)
 		return
 	case "/sitemap.xml":
-		s.sitemap(w, r)
+		s.sitemap(w, r, 0)
+		return
+	}
+	if n, ok := sitemapPart(r.URL.Path); ok {
+		s.sitemap(w, r, n)
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -365,12 +471,61 @@ func (s *Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.write(w, r, http.StatusOK, res.body, res.noindex)
 	default:
 		s.Counters.NotFound.Add(1)
-		msg := http.StatusText(res.status)
-		if s.opt.Dev && res.note != "" {
-			msg = res.note
-		}
-		http.Error(w, msg, res.status)
+		s.writeError(w, r, res)
 	}
+}
+
+// writeError answers a 404 or 410: the page's error template inside the layout when the bundle has
+// one and the language is known, plain text otherwise. These bodies are never cached anywhere.
+func (s *Site) writeError(w http.ResponseWriter, r *http.Request, res *rendered) {
+	if lang, _, ok := s.urls.Resolve(r.Host, r.URL.Path); ok {
+		if body, found, err := s.errorBody(lang, res.status); err != nil {
+			s.log.Error("render error page", "status", res.status, "err", err)
+		} else if found {
+			h := w.Header()
+			h.Set("Content-Type", "text/html; charset=utf-8")
+			h.Set("Cache-Control", "no-store")
+			h.Set("X-Robots-Tag", "noindex")
+			w.WriteHeader(res.status)
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(body)
+			}
+			return
+		}
+	}
+	msg := http.StatusText(res.status)
+	if s.opt.Dev && res.note != "" {
+		msg = res.note
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, msg, res.status)
+}
+
+// ErrorPage renders pages/404.html or pages/410.html (status 404 or 410) for lang, the body Site
+// answers with. found is false when the bundle has no such template. `hearth check` uses it to
+// trial-render the templates, which no route reaches.
+func (s *Site) ErrorPage(lang string, status int) (body []byte, found bool, err error) {
+	return s.errorBody(lang, status)
+}
+
+// Langs lists the site's languages, sorted.
+func (s *Site) Langs() []string { return append([]string(nil), s.urls.Langs...) }
+
+// errorBody renders pages/<status>.html (or its language override) for lang. found is false when
+// the bundle has no such template. The page is noindex and carries no canonical or hreflang links.
+func (s *Site) errorBody(lang string, status int) (body []byte, found bool, err error) {
+	pg, ok := s.routes.ErrorPage(status)
+	if !ok {
+		return nil, false, nil
+	}
+	dir := "ltr"
+	if i18n.IsRTL(lang) {
+		dir = "rtl"
+	}
+	_, prefix := s.urls.Location(lang)
+	body, err = s.renderer.Render(pg, render.PageData{Lang: lang, Dir: dir, Params: map[string]string{}, Prefix: prefix,
+		Status: status, NoIndex: true, Dev: s.opt.Dev && s.opt.DevAssetURL != ""})
+	return body, err == nil, err
 }
 
 // resolve is the one request path: ServeHTTP and Prerender both go through it, so a page is
@@ -421,8 +576,7 @@ func (s *Site) render(r *http.Request, lang, urlPath, host, cacheKey, ver string
 
 	var data any
 	var meta Meta
-	if pg.IsDynamic() {
-		h, ok := s.handlers[pg.Pattern]
+	if h, ok := s.handlers[pg.Pattern]; ok || pg.IsDynamic() || s.ssr[pg.Pattern] {
 		if !ok {
 			return &rendered{status: http.StatusNotFound}, nil // SSR-only page without handler
 		}
@@ -472,7 +626,7 @@ func (s *Site) pageData(lang, neutral string, params map[string]string, data any
 		dir = "rtl"
 	}
 	_, prefix := s.urls.Location(lang)
-	return render.PageData{Lang: lang, Dir: dir, Params: params, Data: data, Canonical: canonical,
+	return render.PageData{Lang: lang, Dir: dir, Params: params, Data: data, Canonical: canonical, Status: http.StatusOK, NoIndex: meta.NoIndex,
 		Alternates: s.urls.Alternates(neutral), Prefix: prefix, Dev: s.opt.Dev && s.opt.DevAssetURL != ""}
 }
 
@@ -518,10 +672,37 @@ func (s *Site) robots(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sitemapPart parses "/sitemap-N.xml" (N >= 1).
+func sitemapPart(p string) (int, bool) {
+	rest, ok := strings.CutPrefix(p, "/sitemap-")
+	if !ok {
+		return 0, false
+	}
+	num, ok := strings.CutSuffix(rest, ".xml")
+	if !ok || num == "" || num[0] == '0' || len(num) > 9 {
+		return 0, false
+	}
+	n := 0
+	for _, c := range num {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
+}
+
 // sitemap lists every page in every language of the host being asked (all languages in prefix
-// mode, the host's own language in subdomain/domain mode).
-func (s *Site) sitemap(w http.ResponseWriter, r *http.Request) {
-	lang, _, ok := s.urls.Resolve(r.Host, "/sitemap.xml")
+// mode, the host's own language in subdomain/domain mode). part 0 is /sitemap.xml: the whole
+// list, or, when it exceeds 50,000 URLs or 50 MB, a sitemapindex of /sitemap-1.xml, /sitemap-2.xml,
+// ... which are part 1, 2, ... of the same sorted list. A part that does not exist is a 404, and
+// so is every part while the list fits one file.
+func (s *Site) sitemap(w http.ResponseWriter, r *http.Request, part int) {
+	name := "/sitemap.xml"
+	if part > 0 {
+		name = fmt.Sprintf("/sitemap-%d.xml", part)
+	}
+	lang, _, ok := s.urls.Resolve(r.Host, name)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -530,33 +711,49 @@ func (s *Site) sitemap(w http.ResponseWriter, r *http.Request) {
 	if s.urls.HostMode() {
 		langs = []string{lang}
 	}
-	var paths []string
+	var paths []SitemapEntry
 	for _, pat := range s.routes.Patterns() {
 		pg, _ := s.routes.Lookup(pat)
 		if !pg.IsDynamic() {
-			paths = append(paths, pg.URL())
+			paths = append(paths, SitemapEntry{Path: pg.URL()})
 		}
 	}
-	if s.opt.SitemapEntries != nil {
-		extra, err := s.opt.SitemapEntries(r.Context())
-		if err != nil {
-			s.log.Error("sitemap entries", "err", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		paths = append(paths, extra...)
+	extra, err := s.sitemapEntries(r.Context())
+	if err != nil {
+		s.log.Error("sitemap entries", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
-	seen := map[string]bool{}
-	var urls []string
+	paths = append(paths, extra...)
+	byURL := map[string]time.Time{}
 	for _, p := range paths {
 		for _, l := range langs {
-			if u := s.urls.Abs(l, p); !seen[u] {
-				seen[u] = true
-				urls = append(urls, u)
+			u := s.urls.Abs(l, p.Path)
+			if t, seen := byURL[u]; !seen || p.LastMod.After(t) {
+				byURL[u] = p.LastMod
 			}
 		}
 	}
-	sort.Strings(urls)
+	urls := make([]sitemap.URL, 0, len(byURL))
+	for u, t := range byURL {
+		urls = append(urls, sitemap.URL{Loc: u, LastMod: t})
+	}
+	sort.Slice(urls, func(i, j int) bool { return urls[i].Loc < urls[j].Loc })
+	parts := sitemap.Split(urls, s.sitemapMax.urls, s.sitemapMax.bytes)
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	fmt.Fprint(w, sitemap.XML(urls))
+	switch {
+	case len(parts) == 1 && part == 0:
+		fmt.Fprint(w, sitemap.XML(parts[0]))
+	case part == 0:
+		locs := make([]string, len(parts))
+		for i := range parts {
+			locs[i] = fmt.Sprintf("%s/sitemap-%d.xml", s.urls.Origin(lang), i+1)
+		}
+		fmt.Fprint(w, sitemap.Index(locs))
+	case part <= len(parts) && len(parts) > 1:
+		fmt.Fprint(w, sitemap.XML(parts[part-1]))
+	default:
+		w.Header().Del("Content-Type")
+		http.NotFound(w, r)
+	}
 }

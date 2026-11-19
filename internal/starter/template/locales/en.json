@@ -9,5 +9,8 @@
   "home.intro": "This page was rendered once at build time and is served as a plain file.",
   "about.title": "About | My site",
   "about.heading": "About",
-  "about.body": "Static pages and server-rendered pages share one template location."
+  "about.body": "Static pages and server-rendered pages share one template location.",
+  "notfound.title": "Page not found | My site",
+  "notfound.heading": "Page not found",
+  "notfound.body": "There is nothing at this address."
 }

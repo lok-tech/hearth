@@ -79,6 +79,10 @@ func run() error {
 		return err
 	}
 	site.MustHandle("post/{slug}", postHandler(store)) // a typo in the pattern panics here, at startup
+	site.MustHandle("/", indexHandler(store))          // a page without a parameter must be in "ssr" in the config
+	if err := site.Validate(); err != nil {            // an ssr page without a handler would answer 404
+		return err
+	}
 
 	// The library has no database driver, so the server decides what counts as a change:
 	// here, whenever the version token of the posts changes, pages refill from the new data.

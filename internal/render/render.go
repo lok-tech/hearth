@@ -6,8 +6,11 @@ import (
 	"html/template"
 	"io/fs"
 	"path"
+	"reflect"
 	"sort"
+	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/orelhadad/hearth/internal/data"
 	"github.com/orelhadad/hearth/internal/i18n"
@@ -28,6 +31,8 @@ type PageData struct {
 	Canonical  string
 	Alternates map[string]string // lang -> absolute URL, for hreflang
 	Prefix     string            // URL prefix of this language ("/he", or "" for default/other i18n modes)
+	Status     int               // HTTP status of this response: 200, or 404/410 in the error templates
+	NoIndex    bool              // the layout emits <meta name="robots" content="noindex">; see Render
 	Dev        bool              // true under `hearth dev` with a Vite dev server (it serves assets, no hashed CSS file)
 }
 
@@ -47,6 +52,7 @@ type Renderer struct {
 	manifest *manifest.Manifest
 	catalogs *i18n.Catalogs
 	data     fs.FS // data/ folder for the "data" helper; may be nil
+	extra    template.FuncMap
 
 	mu    sync.RWMutex
 	cache map[string]*template.Template
@@ -59,6 +65,9 @@ type Options struct {
 	Manifest *manifest.Manifest
 	Catalogs *i18n.Catalogs
 	Data     fs.FS
+	// Funcs are extra template functions. Names must not shadow a built-in helper or a Go template
+	// builtin; each value is a func with one result, or a result plus error.
+	Funcs template.FuncMap
 }
 
 // New validates the bundle layout and returns a Renderer.
@@ -69,11 +78,76 @@ func New(o Options) (*Renderer, error) {
 	if _, err := fs.Stat(o.FS, LayoutName); err != nil {
 		return nil, fmt.Errorf("hearth: missing %s: %w", LayoutName, err)
 	}
-	return &Renderer{fsys: o.FS, routes: o.Routes, manifest: o.Manifest, catalogs: o.Catalogs, data: o.Data,
-		cache: map[string]*template.Template{}}, nil
+	r := &Renderer{fsys: o.FS, routes: o.Routes, manifest: o.Manifest, catalogs: o.Catalogs, data: o.Data,
+		cache: map[string]*template.Template{}}
+	if err := r.checkFuncs(o.Funcs); err != nil {
+		return nil, err
+	}
+	r.extra = o.Funcs
+	return r, nil
+}
+
+// goBuiltins are the predefined functions of text/template; a custom function may not shadow them.
+var goBuiltins = []string{"and", "call", "html", "index", "slice", "js", "len", "not", "or", "print",
+	"printf", "println", "urlquery", "eq", "ge", "gt", "le", "lt", "ne"}
+
+var errType = reflect.TypeOf((*error)(nil)).Elem()
+
+// checkFuncs enforces the rules for custom functions, so a mistake fails at New and not (or worse,
+// panics) inside a template.
+func (r *Renderer) checkFuncs(fm template.FuncMap) error {
+	reserved := map[string]bool{}
+	for _, n := range goBuiltins {
+		reserved[n] = true
+	}
+	for n := range r.builtinFuncs("") {
+		reserved[n] = true
+	}
+	names := make([]string, 0, len(fm))
+	for n := range fm {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if !validFuncName(n) {
+			return fmt.Errorf("hearth: Funcs: %q is not a valid function name", n)
+		}
+		if reserved[n] {
+			return fmt.Errorf("hearth: Funcs: %q is a built-in template function or Hearth helper and cannot be replaced", n)
+		}
+		v := reflect.ValueOf(fm[n])
+		if v.Kind() != reflect.Func || v.IsNil() {
+			return fmt.Errorf("hearth: Funcs: %q must be a function", n)
+		}
+		t := v.Type()
+		if t.NumOut() == 0 || t.NumOut() > 2 || t.NumOut() == 2 && !t.Out(1).Implements(errType) {
+			return fmt.Errorf("hearth: Funcs: %q must return one value, or a value and an error", n)
+		}
+	}
+	return nil
+}
+
+func validFuncName(n string) bool {
+	if n == "" {
+		return false
+	}
+	for i, c := range n {
+		if !(c == '_' || unicode.IsLetter(c) || i > 0 && unicode.IsDigit(c)) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Renderer) funcs(lang string) template.FuncMap {
+	fm := r.builtinFuncs(lang)
+	for n, f := range r.extra {
+		fm[n] = f
+	}
+	return fm
+}
+
+func (r *Renderer) builtinFuncs(lang string) template.FuncMap {
 	return template.FuncMap{
 		"t": func(key string) (string, error) {
 			if r.catalogs == nil {
@@ -92,6 +166,12 @@ func (r *Renderer) funcs(lang string) template.FuncMap {
 				return "", fmt.Errorf("hearth: no manifest loaded")
 			}
 			return r.manifest.Asset(name)
+		},
+		"entry": func(name string) (template.HTML, error) {
+			if r.manifest == nil {
+				return "", fmt.Errorf("hearth: no manifest loaded")
+			}
+			return r.manifest.Entry(name)
 		},
 		"picture": func(name, alt string) (template.HTML, error) {
 			if r.manifest == nil {
@@ -161,6 +241,25 @@ func (r *Renderer) Render(pg *route.Page, d PageData) ([]byte, error) {
 	t, err := r.get(pg, d.Lang)
 	if err != nil {
 		return nil, err
+	}
+	if d.Status == 0 {
+		d.Status = 200
+	}
+	// A static page can ask for noindex with {{define "robots"}}noindex{{end}}. It is folded into
+	// NoIndex here, so a handler's Meta.NoIndex and the template take the same path and the layout
+	// emits exactly one tag.
+	if rt := t.Lookup("robots"); rt != nil {
+		var rb bytes.Buffer
+		if err := rt.Execute(&rb, d); err != nil {
+			return nil, fmt.Errorf("hearth: render %s: robots: %w", pg.File, err)
+		}
+		switch strings.TrimSpace(rb.String()) {
+		case "":
+		case "noindex":
+			d.NoIndex = true
+		default:
+			return nil, fmt.Errorf("hearth: %s: {{define \"robots\"}} must produce \"noindex\" or nothing, got %q", pg.File, strings.TrimSpace(rb.String()))
+		}
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, d); err != nil {

@@ -18,7 +18,7 @@ import (
 
 func siteBundle() fstest.MapFS {
 	return fstest.MapFS{
-		"manifest.json":        {Data: []byte(`{"format":1}`)},
+		"manifest.json":        {Data: []byte(`{"format":3}`)},
 		"layouts/base.html":    {Data: []byte(`<title>{{block "title" .}}x{{end}}</title><link rel="canonical" href="{{.Canonical}}">{{block "body" .}}{{end}}`)},
 		"pages/index.html":     {Data: []byte(`{{define "body"}}home{{end}}`)},
 		"pages/post/[id].html": {Data: []byte(`{{define "title"}}{{.Data}}{{end}}{{define "body"}}post {{index .Params "id"}}: {{.Data}}{{end}}`)},

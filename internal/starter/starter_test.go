@@ -72,6 +72,18 @@ func TestStarterBuildsWithFakeVite(t *testing.T) {
 			t.Errorf("he/index.html missing %s", want)
 		}
 	}
+	nf := testutil.Read(t, pub, "404.html")
+	for _, want := range []string{`<meta name="robots" content="noindex">`, "Page not found", `href="/assets/entry-cd34.css"`, `<a class="brand" href="/">`} {
+		if !strings.Contains(nf, want) {
+			t.Errorf("404.html missing %s:\n%s", want, nf)
+		}
+	}
+	if !strings.Contains(testutil.Read(t, pub, "he", "404.html"), "הדף לא נמצא") {
+		t.Error("he/404.html is not Hebrew")
+	}
+	if strings.Contains(testutil.Read(t, pub, "index.html"), `name="robots"`) {
+		t.Error("the home page must stay indexable")
+	}
 	for _, d := range []string{".vite", ".hearth"} {
 		if _, err := os.Stat(filepath.Join(pub, d)); err == nil {
 			t.Errorf("%s was deployed", d)

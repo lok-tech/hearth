@@ -1,7 +1,6 @@
 package dev
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/orelhadad/hearth/internal/cache"
 	"github.com/orelhadad/hearth/internal/config"
+	"github.com/orelhadad/hearth/internal/mock"
 	"github.com/orelhadad/hearth/internal/route"
 	"github.com/orelhadad/hearth/pkg/hearth"
 )
@@ -126,6 +126,8 @@ func newMock(siteDir string, cfg *config.Config, wa *watcher) (http.Handler, err
 			I18n:        hearth.I18n{Mode: cfg.I18n.Mode, Hosts: cfg.I18n.Hosts},
 			Dev:         true,
 			DevAssetURL: devBase,
+			SSR:         cfg.SSR,
+			Funcs:       mock.Stubs(cfg.Funcs),
 			Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 		}
 		if vite != nil {
@@ -144,9 +146,13 @@ func newMock(siteDir string, cfg *config.Config, wa *watcher) (http.Handler, err
 			http.Error(w, "hearth: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		ssr := map[string]bool{}
+		for _, p := range cfg.SSR {
+			ssr[strings.TrimPrefix(p, "/")] = true
+		}
 		for _, pat := range routes.Patterns() {
-			if pg, _ := routes.Lookup(pat); pg.IsDynamic() {
-				if err := site.Handle(pat, mockHandler(src, pg)); err != nil {
+			if pg, _ := routes.Lookup(pat); pg.IsDynamic() || ssr[pg.Pattern] {
+				if err := site.Handle(pat, mock.Handler(src, pg)); err != nil {
 					http.Error(w, "hearth: "+err.Error(), http.StatusInternalServerError)
 					return
 				}
@@ -154,28 +160,4 @@ func newMock(siteDir string, cfg *config.Config, wa *watcher) (http.Handler, err
 		}
 		site.ServeHTTP(w, r)
 	}), nil
-}
-
-// mockHandler answers a dynamic page from its .mock.json file.
-func mockHandler(src fs.FS, pg *route.Page) hearth.Handler {
-	return func(r *http.Request, params map[string]string) (any, hearth.Meta, error) {
-		missing := fmt.Errorf("%w: no mock data for %s (add %s)", hearth.ErrNotFound, r.URL.Path, pg.MockFile())
-		b, err := fs.ReadFile(src, pg.MockFile())
-		if err != nil {
-			return nil, hearth.Meta{}, missing
-		}
-		var m map[string]any
-		if err := json.Unmarshal(b, &m); err != nil {
-			return nil, hearth.Meta{}, fmt.Errorf("%s: %w", pg.MockFile(), err)
-		}
-		if len(pg.Params) == 1 {
-			if v, ok := m[params[pg.Params[0]]]; ok {
-				return v, hearth.Meta{}, nil
-			}
-		}
-		if v, ok := m["*"]; ok {
-			return v, hearth.Meta{}, nil
-		}
-		return nil, hearth.Meta{}, missing
-	}
 }

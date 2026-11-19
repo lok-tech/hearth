@@ -5,14 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{block "title" .}}{{t "site.name"}}{{end}}</title>
 <meta name="description" content="{{block "description" .}}{{t "site.description"}}{{end}}">
-{{if .Canonical}}<link rel="canonical" href="{{.Canonical}}">
+{{if .NoIndex}}<meta name="robots" content="noindex">
+{{end}}{{if .Canonical}}<link rel="canonical" href="{{.Canonical}}">
 {{end}}{{range $lang, $url := .Alternates}}<link rel="alternate" hreflang="{{$lang}}" href="{{$url}}">
-{{end}}{{if .Dev}}<script type="module" src="{{asset "@vite/client"}}"></script>
-{{else}}<link rel="stylesheet" href="{{asset "src/entry.ts.css"}}">
-{{end}}{{block "head" .}}{{end}}
+{{end}}{{entry "src/entry.ts"}}
+{{block "head" .}}{{end}}
 </head>
 <body>
 {{block "body" .}}{{end}}
-<script type="module" src="{{asset "src/entry.ts"}}"></script>
 </body>
 </html>

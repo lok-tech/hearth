@@ -16,7 +16,7 @@ import (
 
 func i18nBundle() fstest.MapFS {
 	return fstest.MapFS{
-		"manifest.json": {Data: []byte(`{"format":1,"version":"b1"}`)},
+		"manifest.json": {Data: []byte(`{"format":3,"version":"b1"}`)},
 		"layouts/base.html": {Data: []byte(`<html lang="{{.Lang}}" dir="{{.Dir}}"><link rel="canonical" href="{{.Canonical}}">` +
 			`{{range $l,$u := .Alternates}}<link rel="alternate" hreflang="{{$l}}" href="{{$u}}">{{end}}` +
 			`{{block "body" .}}{{end}}</html>`)},

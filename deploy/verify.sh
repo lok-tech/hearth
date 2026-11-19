@@ -10,6 +10,9 @@
 #   VERIFY_ASSET=/assets/x.css    a hashed asset on this origin (default: found in the page HTML)
 #   VERIFY_DYNAMIC=/post/1        a server-rendered page that exists (checked twice: render, then file)
 #   VERIFY_DYNAMIC_MISSING=/post/nope   a dynamic URL that must be 404
+#   VERIFY_404_TEXT="Page not found"  text the branded 404 page must contain (pages/404.html)
+#   VERIFY_UNICODE=/letter/%D7%90 a server-rendered URL with a percent-encoded non-ASCII parameter
+#                                 (a Hebrew letter), checked like VERIFY_DYNAMIC: render, then file
 #   VERIFY_EXTERNAL=1             you are running from outside the private network: /healthz must be hidden
 #   CURL=curl                     the curl binary (tests substitute a fake)
 #
@@ -121,6 +124,13 @@ done
 r=$(fetch GET "$MISSING")
 if expect_status "unknown path" "$r" 404; then
   if grep -qi immutable <<<"$(header "$r" cache-control)"; then bad "404 caching" "a 404 must not be marked immutable"; fi
+  if [ -n "${VERIFY_404_TEXT:-}" ]; then
+    if grep -qF -- "$VERIFY_404_TEXT" <<<"$(body "$MISSING")"; then
+      ok "404 body is the branded page"
+    else
+      bad "404 body" "$MISSING does not contain '$VERIFY_404_TEXT'; pages/404.html is not served for missing paths"
+    fi
+  fi
 fi
 
 # --- hashed assets ---
@@ -157,6 +167,18 @@ if [ -n "${VERIFY_DYNAMIC:-}" ]; then
 fi
 if [ -n "${VERIFY_DYNAMIC_MISSING:-}" ]; then
   expect_status "dynamic missing $VERIFY_DYNAMIC_MISSING" "$(fetch GET "$VERIFY_DYNAMIC_MISSING")" 404
+fi
+
+# A non-ASCII parameter (voters: /letter/{letter} with a Hebrew letter). The request is percent-encoded;
+# the cache file name is the UTF-8 letter, so the server must decode before it looks for the file.
+if [ -n "${VERIFY_UNICODE:-}" ]; then
+  a=$(fetch GET "$VERIFY_UNICODE")
+  b=$(fetch GET "$VERIFY_UNICODE")
+  if [ "$(status "$a")" = 200 ] && [ "$(status "$b")" = 200 ] && [ -n "$(header "$a" etag)" ] && [ "$(header "$a" etag)" = "$(header "$b" etag)" ]; then
+    ok "non-ASCII path $VERIFY_UNICODE renders, then repeats with the same ETag"
+  else
+    bad "non-ASCII path" "first $(status "$a") etag '$(header "$a" etag)', second $(status "$b") etag '$(header "$b" etag)'"
+  fi
 fi
 
 # --- platform endpoints and methods ---

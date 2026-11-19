@@ -53,3 +53,13 @@ func languagePrefix(path string) string {
 	}
 	return ""
 }
+
+// indexHandler serves the home page, a static route that lists the posts. It is listed in "ssr" in
+// site/hearth.config.json, so `hearth build` does not write a file that would shadow it. After a
+// post is added or removed, call site.Invalidate("/") (or flip the version) to refresh it.
+func indexHandler(store Store) hearth.Handler {
+	return func(r *http.Request, _ map[string]string) (any, hearth.Meta, error) {
+		slugs, err := store.Slugs(r.Context())
+		return slugs, hearth.Meta{}, err
+	}
+}

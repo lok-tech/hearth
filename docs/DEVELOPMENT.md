@@ -113,7 +113,7 @@ Not done yet: the npm names (`hearth`, scope `@hearth`) have not been checked fo
   in an `internal` package.
 - **i18n mode**: `internal/i18n/urls.go` (`Location`, `Origin`, `Resolve`) and `newURLs` validation in `Site.New`; add
   cases to `urls_test.go`, `pkg/hearth/i18n_test.go` and the parity test.
-- **Cache layout or manifest meaning**: bump `manifest.BundleFormat` and update ARCHITECTURE.md.
+- **Cache layout or manifest meaning**: bump `manifest.BundleFormat` (now 3) and update ARCHITECTURE.md and every test manifest that names a format.
 - **Starter**: edit `internal/starter/template/`; `starter_test.go` runs `check` and a build with a fake Vite on it.
 
 ## Conventions

@@ -25,12 +25,26 @@ request ──► web server ──► 1. dist/public/<path>             prebuil
 - **Static-only site** (no Go server): serve `dist/public` and nothing else. Use `Caddyfile.static`, or
   the nginx `location /` block with `try_files $uri $uri/index.html =404`.
 - **SSR site**: all three layers. Step 3 only sees misses, so after warm-up the Go server handles
-  almost nothing. 404, 410 and redirects are never written, so they always reach step 3.
+  almost nothing. 404, 410 and redirects are never written to the cache, so they always reach step 3.
+- **404 pages.** Put `pages/404.html` (and optionally `410.html`, and `404.he.html` per language) next to your
+  pages. They render inside the layout with `.Status`, are `noindex`, are never cached, and the Go server answers
+  with them itself, so a SSR site needs nothing extra in the web server. For servers without the Go server in
+  the path (static-only, S3/CDN, a missing asset), `hearth build` also writes the rendered 404 as a file:
+  `dist/public/404.html` (default language; in prefix mode also `dist/public/<lang>/404.html`), or
+  `<host>/404.html` in each host directory in subdomain/domain modes. `Caddyfile.static` and the nginx example
+  serve it with status 404.
 - `hearth build` is not a second renderer: it runs a `hearth.Site` over your templates, prerenders every
   page (`Site.Prerender`) and copies the result (`Site.Export`) into `dist/public`. A prebuilt file and a page
   your server renders on a miss therefore come from the same code and are byte-identical (a test enforces it).
 - `hearth build` writes `dist/templates`, which the Go server embeds (`embed.FS`) or reads from a path.
   Both the build and the server record a bundle format version; a mismatch fails at startup.
+- **Pages that list `ssr` in `hearth.config.json`** (for example `/candidates`) are not prerendered, so no file
+  exists in `dist/public` and the request falls through to the Go server, which renders them with their handler
+  and caches the file. After the data changes, call `site.Invalidate("/candidates", "/")` (every language) or
+  `SetVersion` for everything. Call `site.Validate()` at startup: an `ssr` page without a handler answers 404.
+- **Sites with custom `Funcs`** cannot be built by the CLI (it does not run your Go code). Give your binary a
+  `build` subcommand that calls `hearth.Build(ctx, site, "dist/public")`, the same prerender, export and
+  sitemap steps the CLI runs.
 
 Minimal Go server (`go get github.com/orelhadad/hearth`, then
 `import "github.com/orelhadad/hearth/pkg/hearth"`):
@@ -188,12 +202,18 @@ blocked in the development sandbox), so run the checks yourself:
 nginx -t                       # or: caddy validate --config deploy/caddy/Caddyfile
 deploy/verify.sh http://localhost:8080
 VERIFY_DYNAMIC=/post/1 VERIFY_DYNAMIC_MISSING=/post/nope deploy/verify.sh https://example.com
+VERIFY_404_TEXT="Page not found" deploy/verify.sh https://example.com   # the missing path shows pages/404.html
+VERIFY_UNICODE=/letter/%D7%90 deploy/verify.sh https://example.com      # a percent-encoded Hebrew parameter
 VERIFY_EXTERNAL=1 deploy/verify.sh https://example.com   # from outside: /healthz must be hidden
 ```
 
-`verify.sh` itself is tested against a fake server (`deploy/test/verify-selftest.sh`): a correct server passes and ten
+`verify.sh` itself is tested against a fake server (`deploy/test/verify-selftest.sh`): a correct server passes and twelve
 deliberate violations (slash, `index.html`, dotfile, traversal, asset and HTML headers, ETag, query, dynamic
-ETag, immutable 404) each fail. The compose file is validated by `docker-compose config`.
+ETag, immutable 404, unbranded 404 body, failing Hebrew path) each fail. The compose file is validated by `docker-compose config`.
+
+The Hebrew `{letter}` check (`VERIFY_UNICODE`) is **not yet verified against real Caddy or nginx**. The Go side
+writes the cache file under the UTF-8 name (tested), and the open question is only whether the web server maps
+the percent-encoded request path to that file name. If it fails on Caddy, that is where to look first.
 
 The Caddy specifics most likely to need adjusting, if `verify.sh` fails there:
 

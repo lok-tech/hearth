@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{block "title" .}}{{t "site.name"}}{{end}}</title>
 <meta name="description" content="{{block "description" .}}{{t "site.description"}}{{end}}">
-{{if .Canonical}}<link rel="canonical" href="{{.Canonical}}">
+{{if .NoIndex}}<meta name="robots" content="noindex">
+{{end}}{{if .Canonical}}<link rel="canonical" href="{{.Canonical}}">
 {{end}}{{range $lang, $url := .Alternates}}<link rel="alternate" hreflang="{{$lang}}" href="{{$url}}">
 {{end}}<style>
 :root{color-scheme:light dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.6}

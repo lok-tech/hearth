@@ -94,3 +94,45 @@ func TestPageDataLink(t *testing.T) {
 		t.Error("default links wrong")
 	}
 }
+
+func TestRenderRobotsBlockAndStatus(t *testing.T) {
+	fsys := fstest.MapFS{
+		"layouts/base.html": {Data: []byte(`{{if .NoIndex}}<meta name="robots" content="noindex">{{end}}[{{.Status}}]{{block "body" .}}{{end}}`)},
+		"pages/a.html":      {Data: []byte(`{{define "robots"}} noindex {{end}}{{define "body"}}a{{end}}`)},
+		"pages/b.html":      {Data: []byte(`{{define "body"}}b{{end}}`)},
+		"pages/c.html":      {Data: []byte(`{{define "robots"}}{{if .NoIndex}}noindex{{end}}{{end}}{{define "body"}}c{{end}}`)},
+		"pages/d.html":      {Data: []byte(`{{define "robots"}}follow{{end}}{{define "body"}}d{{end}}`)},
+	}
+	routes, err := route.Discover(fsys, "pages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(Options{FS: fsys, Routes: routes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(name string, d PageData) (string, error) {
+		pg, _ := routes.Lookup(name)
+		b, err := r.Render(pg, d)
+		return string(b), err
+	}
+	const tag = `<meta name="robots" content="noindex">`
+	if out, err := render("a", PageData{Lang: "en"}); err != nil || out != tag+"[200]a" {
+		t.Errorf("a = %q, %v", out, err)
+	}
+	if out, _ := render("a", PageData{Lang: "en", NoIndex: true}); strings.Count(out, tag) != 1 {
+		t.Errorf("handler and template both set noindex: %q", out)
+	}
+	if out, _ := render("b", PageData{Lang: "en"}); out != "[200]b" {
+		t.Errorf("b = %q", out)
+	}
+	if out, _ := render("b", PageData{Lang: "en", NoIndex: true, Status: 404}); out != tag+"[404]b" {
+		t.Errorf("b noindex = %q", out)
+	}
+	if out, _ := render("c", PageData{Lang: "en"}); out != "[200]c" {
+		t.Errorf("c = %q", out)
+	}
+	if _, err := render("d", PageData{Lang: "en"}); err == nil || !strings.Contains(err.Error(), "must produce") {
+		t.Errorf("d: %v", err)
+	}
+}

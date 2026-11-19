@@ -7,6 +7,8 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | change the code: packages, the single-engine rule, request and build flow, data formats, invariants |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | build, test and release; environment constraints; end-to-end recipe; how to extend; pitfalls |
 | [DEPLOY.md](DEPLOY.md) | serve it: Caddy, nginx, S3/CDN, compose, release order, rollback, `deploy/verify.sh` |
+| [MIGRATING-FROM-ASTRO.md](MIGRATING-FROM-ASTRO.md) | port an Astro site (voters.co.il as the example): routes, styles, embedded data, funcs, redirects, images, parity check |
+| [VOTERS-PLAN.md](VOTERS-PLAN.md) | see the voters.co.il gaps, their designs and per-phase status |
 | [../example/README.md](../example/README.md) | run and read the Postgres example |
 
 Starting a new session on this repository: read PLAN.md (status and open items), then ARCHITECTURE.md, then run the

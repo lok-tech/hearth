@@ -52,6 +52,8 @@
 
 		# 7. Everything else: the Go server renders, writes the file, answers.
 		#    Next request for the same path is served by step 6.
+		#    The Go server answers a missing path itself with the branded 404 (pages/404.html)
+		#    and its own status, so no handle_errors is needed here. It is never cached.
 		reverse_proxy {$APP_UPSTREAM:app:8080}
 	}
 }

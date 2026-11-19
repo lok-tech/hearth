@@ -8,11 +8,9 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -20,6 +18,7 @@ import (
 	"github.com/orelhadad/hearth/internal/data"
 	"github.com/orelhadad/hearth/internal/fsutil"
 	"github.com/orelhadad/hearth/internal/manifest"
+	"github.com/orelhadad/hearth/internal/mock"
 	"github.com/orelhadad/hearth/internal/route"
 	"github.com/orelhadad/hearth/pkg/hearth"
 )
@@ -77,6 +76,11 @@ func Run(o Options) (*Report, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if routes, err := route.Discover(os.DirFS(site), "pages"); err != nil {
+		return nil, err
+	} else if _, err := ssrPatterns(routes, cfg); err != nil {
+		return nil, err
+	}
 	pub, tpl := filepath.Join(out, "public"), filepath.Join(out, "templates")
 	for _, d := range []string{pub, tpl} {
 		if err := os.RemoveAll(d); err != nil {
@@ -92,13 +96,14 @@ func Run(o Options) (*Report, error) {
 			return nil, err
 		}
 	}
-	man := &manifest.Manifest{Format: manifest.BundleFormat, Assets: map[string]string{}, Images: map[string][]manifest.ImageFile{}}
+	man := &manifest.Manifest{Format: manifest.BundleFormat, Assets: map[string]string{}, Entries: map[string]manifest.Entry{}, Images: map[string][]manifest.ImageFile{}}
 	if cfg.Vite != nil {
 		o.logf("vite: %s", strings.Join(cfg.Vite.Command, " "))
 		if man, err = runVite(ctx, site, pub, cfg.Vite, cfg.AssetBase, o.Log); err != nil {
 			return nil, err
 		}
 	}
+	man.SSR = cfg.SSR
 	man.Version = fmt.Sprintf("%x", hashDirNames(site))
 	mb, _ := json.MarshalIndent(man, "", "  ")
 	if err := os.WriteFile(filepath.Join(out, "manifest.json"), mb, 0o644); err != nil {
@@ -130,91 +135,47 @@ func Run(o Options) (*Report, error) {
 		return nil, err
 	}
 	defer cleanup()
-	pr := srv.Prerender(ctx, pl.paths, runtime.NumCPU())
-	if err := failures(pr); err != nil {
-		return nil, err
-	}
-	if err := srv.Export(pub); err != nil {
+	// hearth.Build is Prerender + Export + sitemap and robots: the one routine a Go program with
+	// its own handlers and Funcs calls too.
+	pr, err := hearth.Build(ctx, srv, pub)
+	if err != nil {
 		return nil, err
 	}
 	rep := &Report{Out: out, Pages: pr.Pages}
 	for _, pg := range rep.Pages {
 		o.logf("page %s", pg)
 	}
-	if cfg.BaseURL != "" {
-		if err := writeSitemapAndRobots(srv, cfg, pub); err != nil {
-			return nil, err
-		}
-	}
 	return rep, nil
-}
-
-// failures turns a prerender report into one error (the first problem, plus a count).
-func failures(pr hearth.PrerenderReport) error {
-	if len(pr.Failures) == 0 {
-		return nil
-	}
-	if n := len(pr.Failures); n > 1 {
-		return fmt.Errorf("%w (and %d more pages failed)", pr.Failures[0], n-1)
-	}
-	return pr.Failures[0]
-}
-
-// origins lists the host directories of the output: one root, or one per language host.
-func origins(cfg *config.Config) []string {
-	if cfg.I18n.Mode == "prefix" {
-		return []string{""}
-	}
-	seen := map[string]bool{}
-	var hosts []string
-	for _, h := range cfg.I18n.Hosts {
-		if !seen[h] {
-			seen[h] = true
-			hosts = append(hosts, h)
-		}
-	}
-	sort.Strings(hosts)
-	return hosts
-}
-
-// writeSitemapAndRobots saves what the Site itself answers for /sitemap.xml and /robots.txt,
-// once per host, so the static files match the server's.
-func writeSitemapAndRobots(site *hearth.Site, cfg *config.Config, pub string) error {
-	for _, host := range origins(cfg) {
-		dir := pub
-		if host != "" {
-			dir = filepath.Join(pub, host)
-		}
-		for _, name := range []string{"sitemap.xml", "robots.txt"} {
-			target := filepath.Join(dir, name)
-			if _, err := os.Stat(target); err == nil {
-				continue // robots.txt shipped in public/ wins
-			}
-			req := httptest.NewRequest(http.MethodGet, "/"+name, nil)
-			req.Host = host
-			w := httptest.NewRecorder()
-			site.ServeHTTP(w, req)
-			if w.Code != http.StatusOK {
-				return fmt.Errorf("hearth: /%s answered %d", name, w.Code)
-			}
-			if err := fsutil.WriteFileAtomic(target, w.Body.Bytes()); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // plan is what a build has to render: language-neutral paths, plus the handlers that supply
 // the data of bound collections (the build's stand-in for a server's database).
 type plan struct {
-	paths    []string                  // every page to prerender
+	paths    []string                  // every page to prerender (ssr pages are not among them)
+	ssr      []*route.Page             // parameterless pages served by handlers
 	entries  []string                  // the collection pages among them, for the sitemap
 	handlers map[string]hearth.Handler // [param] pattern -> handler
 }
 
+// ssrPatterns checks the config's ssr list against the discovered routes and returns the pages.
+// An unknown entry, or one with route parameters, is an error.
+func ssrPatterns(routes *route.Table, cfg *config.Config) (map[string]*route.Page, error) {
+	out := map[string]*route.Page{}
+	for _, p := range cfg.SSR {
+		pg, ok := routes.Lookup(p)
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("hearth: ssr entry %q matches no template (have: %s)", p, strings.Join(routes.Patterns(), ", "))
+		case pg.IsDynamic():
+			return nil, fmt.Errorf("hearth: ssr entry %q has route parameters; pages with [param] are already server-rendered", p)
+		}
+		out[pg.Pattern] = pg
+	}
+	return out, nil
+}
+
 // planPages lists every page to bake: static pages, plus each entry of a bound collection for
-// [param] pages. Unbound dynamic pages are SSR-only and are not prerendered.
+// [param] pages. Unbound dynamic pages and ssr pages are served by handlers and are not prerendered.
 func planPages(bundle fs.FS, cfg *config.Config) (*plan, error) {
 	routes, err := route.Discover(bundle, "pages")
 	if err != nil {
@@ -233,9 +194,17 @@ func planPages(bundle fs.FS, cfg *config.Config) (*plan, error) {
 			return nil, fmt.Errorf("hearth: collection %q: exactly one route parameter is supported", pat)
 		}
 	}
+	ssr, err := ssrPatterns(routes, cfg)
+	if err != nil {
+		return nil, err
+	}
 	pl := &plan{handlers: map[string]hearth.Handler{}}
 	for _, pat := range routes.Patterns() {
 		pg, _ := routes.Lookup(pat)
+		if ssr[pg.Pattern] != nil {
+			pl.ssr = append(pl.ssr, pg)
+			continue
+		}
 		if !pg.IsDynamic() {
 			pl.paths = append(pl.paths, pg.URL())
 			continue
@@ -296,14 +265,22 @@ func newSite(bundle fs.FS, cfg *config.Config, pl *plan, lenient bool) (*hearth.
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	site, err := hearth.New(hearth.Options{
-		Bundle:         bundle,
-		CacheDir:       dir,
-		BaseURL:        cfg.BaseURL,
-		DefaultLang:    cfg.DefaultLang,
-		I18n:           hearth.I18n{Mode: cfg.I18n.Mode, Hosts: cfg.I18n.Hosts},
-		LenientAssets:  lenient,
-		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		SitemapEntries: func(context.Context) ([]string, error) { return pl.entries, nil },
+		Bundle:        bundle,
+		CacheDir:      dir,
+		BaseURL:       cfg.BaseURL,
+		DefaultLang:   cfg.DefaultLang,
+		I18n:          hearth.I18n{Mode: cfg.I18n.Mode, Hosts: cfg.I18n.Hosts},
+		LenientAssets: lenient,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SSR:           cfg.SSR,
+		Funcs:         mock.Stubs(cfg.Funcs),
+		SitemapURLs: func(context.Context) ([]hearth.SitemapEntry, error) {
+			out := make([]hearth.SitemapEntry, len(pl.entries)) // collection data carries no dates
+			for i, p := range pl.entries {
+				out[i] = hearth.SitemapEntry{Path: p}
+			}
+			return out, nil
+		},
 	})
 	if err != nil {
 		cleanup()
@@ -367,9 +344,11 @@ func hashDirNames(site string) uint32 {
 }
 
 type viteEntry struct {
-	File string   `json:"file"`
-	Src  string   `json:"src"`
-	CSS  []string `json:"css"`
+	File    string   `json:"file"`
+	Src     string   `json:"src"`
+	IsEntry bool     `json:"isEntry"`
+	CSS     []string `json:"css"`
+	Imports []string `json:"imports"` // static imports: keys of other manifest entries
 }
 
 // runVite runs the configured Vite command into pubDir and converts its manifest.
@@ -429,15 +408,25 @@ func LoadViteOutput(dir string) (*manifest.Manifest, error) {
 	return m, nil
 }
 
-// ConvertViteManifest maps Vite's manifest to Hearth's: assets["src/entry.ts"] =
-// "/assets/entry-<hash>.js"; an entry's first CSS file is assets["src/entry.ts.css"].
+// ConvertViteManifest maps Vite's manifest to Hearth's. Every file keeps its key as a logical
+// asset name (assets["src/entry.ts"] = "/assets/entry-<hash>.js"; an entry's first CSS file is
+// assets["src/entry.ts.css"]). Every entry (isEntry) is also resolved into Entries: its script,
+// its CSS and that of all statically imported chunks (cycle-safe, de-duplicated, imported chunks
+// first so the cascade follows execution order), and the chunks to preload. Dynamic imports are
+// not followed.
 func ConvertViteManifest(b []byte) (*manifest.Manifest, error) {
 	var in map[string]viteEntry
 	if err := json.Unmarshal(b, &in); err != nil {
 		return nil, fmt.Errorf("hearth: vite manifest: %w", err)
 	}
-	m := &manifest.Manifest{Format: manifest.BundleFormat, Assets: map[string]string{}, Images: map[string][]manifest.ImageFile{}}
-	for key, e := range in {
+	m := &manifest.Manifest{Format: manifest.BundleFormat, Assets: map[string]string{}, Entries: map[string]manifest.Entry{}, Images: map[string][]manifest.ImageFile{}}
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		e := in[key]
 		if e.File == "" {
 			continue
 		}
@@ -445,6 +434,56 @@ func ConvertViteManifest(b []byte) (*manifest.Manifest, error) {
 		if len(e.CSS) > 0 {
 			m.Assets[key+".css"] = "/" + e.CSS[0]
 		}
+	}
+	for _, key := range keys {
+		e := in[key]
+		if !e.IsEntry || e.File == "" {
+			continue
+		}
+		out := manifest.Entry{CSS: []string{}, Preload: []string{}}
+		seenCSS := map[string]bool{}
+		addCSS := func(files []string) {
+			for _, f := range files {
+				if !seenCSS[f] {
+					seenCSS[f] = true
+					out.CSS = append(out.CSS, "/"+f)
+				}
+			}
+		}
+		seen := map[string]bool{key: true}
+		seenFile := map[string]bool{e.File: true}
+		var walk func(from string, imports []string) error
+		walk = func(from string, imports []string) error {
+			for _, imp := range imports {
+				c, ok := in[imp]
+				if !ok {
+					return fmt.Errorf("hearth: vite manifest: %q imports %q, which is not in the manifest", from, imp)
+				}
+				if seen[imp] {
+					continue
+				}
+				seen[imp] = true
+				if c.File != "" && !seenFile[c.File] {
+					seenFile[c.File] = true
+					out.Preload = append(out.Preload, "/"+c.File)
+				}
+				if err := walk(imp, c.Imports); err != nil {
+					return err
+				}
+				addCSS(c.CSS)
+			}
+			return nil
+		}
+		if err := walk(key, e.Imports); err != nil {
+			return nil, err
+		}
+		addCSS(e.CSS)
+		if strings.HasSuffix(e.File, ".css") { // a CSS-only entry
+			addCSS([]string{e.File})
+		} else {
+			out.JS = "/" + e.File
+		}
+		m.Entries[key] = out
 	}
 	return m, nil
 }

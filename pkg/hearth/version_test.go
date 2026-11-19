@@ -14,7 +14,7 @@ import (
 func siteWithBundleVersion(t *testing.T, dir, bundleVer string, db *fakeDB, keep int) *Site {
 	t.Helper()
 	b := siteBundle()
-	b["manifest.json"].Data = []byte(`{"format":1,"version":"` + bundleVer + `"}`)
+	b["manifest.json"].Data = []byte(`{"format":3,"version":"` + bundleVer + `"}`)
 	s, err := New(Options{Bundle: b, CacheDir: dir, BaseURL: "https://x.test", KeepVersions: keep,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {

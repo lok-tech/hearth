@@ -27,6 +27,7 @@ func TestWatchServesPagesAndBuiltAssetsOnOnePort(t *testing.T) {
 	}
 	f := testutil.BaseSite()
 	f["pages/styled.html"] = `{{define "body"}}<link rel="stylesheet" href="{{asset "src/entry.ts.css"}}"><script type="module" src="{{asset "src/entry.ts"}}"></script>{{if .Dev}}VITE-CLIENT{{end}}{{end}}`
+	f["pages/entried.html"] = `{{define "body"}}{{entry "src/entry.ts"}}{{end}}`
 	f["public/robots-dev.txt"] = "public file"
 	site := testutil.WriteSite(t, f)
 	cfg := &config.Config{DefaultLang: "en", I18n: config.I18nConfig{Mode: "prefix"},
@@ -43,6 +44,9 @@ func TestWatchServesPagesAndBuiltAssetsOnOnePort(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %s: %s", want, body)
 		}
+	}
+	if e := testutil.Get(h, "/entried").Body.String(); !strings.Contains(e, `<link rel="stylesheet" href="/assets/entry-cd34.css">`) || !strings.Contains(e, `<script type="module" src="/assets/entry-ab12.js"></script>`) {
+		t.Errorf("{{entry}} in watch mode: %s", e)
 	}
 	if strings.Contains(body, "VITE-CLIENT") {
 		t.Error("watch mode must not behave like a Vite dev server page")

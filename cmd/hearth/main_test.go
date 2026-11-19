@@ -93,3 +93,25 @@ func TestInitAndVersion(t *testing.T) {
 		t.Errorf("two dirs: %d", c)
 	}
 }
+
+func TestCheckTreatsStubbedFuncsAsNotesAndBuildFailsOnThem(t *testing.T) {
+	site := writeSite(t)
+	os.WriteFile(filepath.Join(site, "hearth.config.json"), []byte(`{"funcs":["num"]}`), 0o644)
+	os.WriteFile(filepath.Join(site, "pages", "index.html"), []byte(`{{define "body"}}{{num 1}}{{end}}`), 0o644)
+	c, o, e := do("check", "-site", site)
+	if c != 0 || !strings.Contains(e, "needs your Go program") || !strings.Contains(o, "ok") {
+		t.Fatalf("check: %d %q %q", c, o, e)
+	}
+	// the CLI cannot bake a page that needs the Go program: it says so instead of writing a partial page
+	if c, _, e := do("build", "-site", site); c != 1 || !strings.Contains(e, "provided by your Go program") {
+		t.Fatalf("build: %d %q", c, e)
+	}
+}
+
+func TestCheckRejectsUnknownSSREntry(t *testing.T) {
+	site := writeSite(t)
+	os.WriteFile(filepath.Join(site, "hearth.config.json"), []byte(`{"ssr":["/nope"]}`), 0o644)
+	if c, _, e := do("check", "-site", site); c != 1 || !strings.Contains(e, `ssr entry "/nope"`) {
+		t.Fatalf("%d %q", c, e)
+	}
+}

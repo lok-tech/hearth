@@ -128,3 +128,45 @@ func fakeUpstream(t *testing.T, host string, h http.HandlerFunc) upstream {
 	mt[host] = h
 	return upstream{URL: "http://" + host}
 }
+
+func TestMockServesSSRPagesFromTheirMockFile(t *testing.T) {
+	f := testutil.BaseSite()
+	f["pages/candidates.html"] = `{{define "body"}}{{range .Data.names}}<b>{{.}}</b>{{end}}{{end}}`
+	f["pages/candidates.mock.json"] = `{"names":["Ann","Bo"]}`
+	f["pages/stats.html"] = `{{define "body"}}{{num 5}}{{end}}`
+	site := testutil.WriteSite(t, f)
+	cfg := &config.Config{DefaultLang: "en", I18n: config.I18nConfig{Mode: "prefix"}, SSR: []string{"/candidates"}, Funcs: []string{"num"}}
+	h, err := NewMock(site, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/candidates", "/he/candidates"} {
+		if w := testutil.Get(h, p); w.Code != 200 || !strings.Contains(w.Body.String(), "<b>Ann</b><b>Bo</b>") {
+			t.Errorf("%s: %d %s", p, w.Code, w.Body)
+		}
+	}
+	// a stubbed function fails loudly instead of rendering a partial page
+	if w := testutil.Get(h, "/stats"); w.Code != 500 {
+		t.Errorf("stub call: %d %s", w.Code, w.Body)
+	}
+	// an ssr entry that matches no page is reported, not ignored
+	cfg.SSR = []string{"/missing"}
+	h, _ = NewMock(site, cfg)
+	if w := testutil.Get(h, "/"); w.Code != 500 || !strings.Contains(w.Body.String(), "/missing") {
+		t.Errorf("unknown ssr entry: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestMockServesTheErrorTemplateWithStatus(t *testing.T) {
+	f := testutil.BaseSite()
+	f["pages/404.html"] = `{{define "body"}}branded {{.Status}}{{end}}`
+	h, err := NewMock(testutil.WriteSite(t, f), &config.Config{DefaultLang: "en", I18n: config.I18nConfig{Mode: "prefix"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/nothing", "/he/nothing"} {
+		if w := testutil.Get(h, p); w.Code != 404 || !strings.Contains(w.Body.String(), "branded 404") {
+			t.Errorf("%s: %d %s", p, w.Code, w.Body)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/orelhadad/hearth/internal/config"
 	"github.com/orelhadad/hearth/internal/data"
 	"github.com/orelhadad/hearth/internal/i18n"
+	"github.com/orelhadad/hearth/internal/mock"
 	"github.com/orelhadad/hearth/internal/route"
 )
 
@@ -61,14 +63,25 @@ func Check(siteDir string, cfg *config.Config) []error {
 			return nil
 		})
 	}
-	// mock files must be valid JSON objects
+	// mock files must be valid JSON: an object mapping parameter value to data for [param] pages,
+	// any JSON value (the page's data) for ssr pages
+	isSSR := map[string]bool{}
+	for _, p := range cfg.SSR {
+		isSSR[strings.TrimPrefix(p, "/")] = true
+	}
 	for _, pat := range routes.Patterns() {
 		pg, _ := routes.Lookup(pat)
-		if !pg.IsDynamic() {
+		if !pg.IsDynamic() && !isSSR[pg.Pattern] {
 			continue
 		}
 		b, err := fs.ReadFile(src, pg.MockFile())
 		if err != nil {
+			continue
+		}
+		if !pg.IsDynamic() {
+			if !json.Valid(b) {
+				add("%s: not valid JSON", filepath.ToSlash(pg.MockFile()))
+			}
 			continue
 		}
 		var m map[string]any
@@ -83,6 +96,11 @@ func Check(siteDir string, cfg *config.Config) []error {
 	if err != nil {
 		return append(errs, err)
 	}
+	// ssr pages are rendered from their mock data, like `hearth dev` does.
+	for _, pg := range pl.ssr {
+		pl.paths = append(pl.paths, pg.URL())
+		pl.handlers[pg.Pattern] = mock.Handler(src, pg)
+	}
 	// The trial render is the real engine (hearth.Site), not a second renderer, so a page that
 	// passes check renders the same way in the build and on a server.
 	srv, cleanup, err := newSite(src, cfg, pl, true)
@@ -93,6 +111,17 @@ func Check(siteDir string, cfg *config.Config) []error {
 	for _, f := range srv.Prerender(context.Background(), pl.paths, runtime.NumCPU()).Failures {
 		errs = append(errs, f)
 	}
+	for _, code := range route.ErrorCodes {
+		for _, l := range srv.Langs() {
+			if _, _, err := srv.ErrorPage(l, code); err != nil {
+				errs = append(errs, fmt.Errorf("pages/%d.html [%s]: %w", code, l, err))
+			}
+		}
+	}
 	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
 	return errs
 }
+
+// NeedsProgram reports whether err says a page calls a custom function (config "funcs") that only
+// your Go program provides. `hearth check` cannot judge such a page; it is not a defect.
+func NeedsProgram(err error) bool { return errors.Is(err, mock.ErrNeedsProgram) }
