@@ -65,8 +65,8 @@ node scripts/build-npm.mjs --only darwin-arm64            # use your own os-arch
 (cd npm/platforms/darwin-arm64 && npm pack --cache $S/npmcache --pack-destination $S/tarballs)
 go build -o $S/hearth ./cmd/hearth
 cd $S/e2e && $S/hearth init -name e2e .                   # scaffold the starter
-npm pkg set "devDependencies.hearth=file:../tarballs/hearth-0.1.0.tgz" \
-            "devDependencies.@hearth/cli-darwin-arm64=file:../tarballs/hearth-cli-darwin-arm64-0.1.0.tgz"
+npm pkg set "devDependencies.@lok-tech/hearth=file:../tarballs/lok-tech-hearth-0.1.0.tgz" \
+            "devDependencies.@lok-tech/cli-darwin-arm64=file:../tarballs/lok-tech-cli-darwin-arm64-0.1.0.tgz"
 npm install --cache $S/npmcache --no-audit --no-fund --ignore-scripts
 mkdir -p src/images && node -e "require('sharp')({create:{width:2400,height:1200,channels:3,background:{r:180,g:68,b:31}}}).jpeg().toFile('src/images/hero.jpg')"
 # put {{picture "hero" "alt"}} in a page, then:
@@ -97,7 +97,7 @@ already done: a stray `internal/render` import in `internal/dev`; the build's `S
 3. Publish every platform package first, then `hearth` (`npm publish` in each directory).
 4. Tag the repository; Go users get `pkg/hearth` through the module version.
 
-Not done yet: the npm names (`hearth`, scope `@hearth`) have not been checked for availability.
+The npm names are `@lok-tech/hearth` and `@lok-tech/cli-<os>-<cpu>` (`hearth` and `hearth-cli` are taken on npm). Packages are public (`publishConfig.access`). The installed binary is still `hearth`.
 
 ## How to extend
 

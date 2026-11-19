@@ -383,7 +383,7 @@ func runVite(ctx context.Context, site, pubDir string, v *config.ViteConfig, ass
 }
 
 // LoadViteOutput reads what a Vite run left in dir: .vite/manifest.json, plus the image manifest
-// .hearth/images.json written by the hearth/vite plugin. It deletes nothing and applies no base.
+// .hearth/images.json written by the @lok-tech/hearth/vite plugin. It deletes nothing and applies no base.
 func LoadViteOutput(dir string) (*manifest.Manifest, error) {
 	b, err := os.ReadFile(filepath.Join(dir, ".vite", "manifest.json"))
 	if err != nil {

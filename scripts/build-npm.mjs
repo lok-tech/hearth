@@ -28,7 +28,7 @@ for (const k of only) if (!TARGETS[k]) throw new Error(`unknown target ${k}`);
 for (const key of only) {
   const [goos, goarch] = TARGETS[key];
   const [os, cpu] = key.split("-");
-  const name = `@hearth/cli-${key}`;
+  const name = `@lok-tech/cli-${key}`;
   if (!(name in main.optionalDependencies)) throw new Error(`${name} missing from npm/hearth optionalDependencies`);
   const dir = join(root, "npm", "platforms", key);
   rmSync(dir, { recursive: true, force: true });
@@ -47,17 +47,19 @@ for (const key of only) {
       {
         name,
         version,
-        description: `The hearth CLI binary for ${key}. Install \`hearth\`, not this package.`,
+        description: `The hearth CLI binary for ${key}. Install \`@lok-tech/hearth\`, not this package.`,
         license: main.license,
         os: [os],
         cpu: [cpu],
         files: ["bin"],
         preferUnplugged: true,
+        repository: { type: "git", url: "git+ssh://git@github.com/lok-tech/hearth.git", directory: "npm/hearth" },
+        publishConfig: { access: "public" },
       },
       null,
       2,
     ) + "\n",
   );
-  writeFileSync(join(dir, "README.md"), `# ${name}\n\nPlatform binary for [hearth](https://www.npmjs.com/package/hearth). Do not install directly.\n`);
+  writeFileSync(join(dir, "README.md"), `# ${name}\n\nPlatform binary for [hearth](https://www.npmjs.com/package/@lok-tech/hearth). Do not install directly.\n`);
   console.log(`built ${name}@${version}`);
 }

@@ -444,7 +444,7 @@ Set `Cache-Control` yourself; Hearth does not touch responses it does not render
 - **`public/` is copied as is** to the site root: no hashing, no processing. The 59 MB of candidate photos that
   `photos.ts` loads at runtime stay in `public/photos/...` and are served untouched at `/photos/...`. They are not
   in the manifest, so templates and scripts reference them by plain path.
-- **`{{picture "name" "alt"}}` is for `src/images/**`** (brand logos, illustrations): the `hearth/vite` plugin turns
+- **`{{picture "name" "alt"}}` is for `src/images/**`** (brand logos, illustrations): the `@lok-tech/hearth/vite` plugin turns
   each `.jpg`/`.png` into AVIF, WebP and the original, content-hashed, with `width` and `height` set.
 - **Responsive widths.** `hearthImages({ widths: [480, 960, 1600] })` writes every format at every width
   (default `[maxWidth]`, one size, no change for existing sites). Widths are positive integers, at most 8, none above

@@ -1,8 +1,17 @@
 {
-  "name": "hearth",
+  "name": "@lok-tech/hearth",
   "version": "0.1.0",
   "description": "Static and SSR pages from one template location, baked to files for static-speed serving.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/lok-tech/hearth.git",
+    "directory": "npm/hearth"
+  },
+  "homepage": "https://github.com/lok-tech/hearth#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "hearth": "bin/hearth.js"
@@ -37,12 +46,12 @@
     }
   },
   "optionalDependencies": {
-    "@hearth/cli-darwin-arm64": "0.1.0",
-    "@hearth/cli-darwin-x64": "0.1.0",
-    "@hearth/cli-linux-arm64": "0.1.0",
-    "@hearth/cli-linux-x64": "0.1.0",
-    "@hearth/cli-win32-arm64": "0.1.0",
-    "@hearth/cli-win32-x64": "0.1.0"
+    "@lok-tech/cli-darwin-arm64": "0.1.0",
+    "@lok-tech/cli-darwin-x64": "0.1.0",
+    "@lok-tech/cli-linux-arm64": "0.1.0",
+    "@lok-tech/cli-linux-x64": "0.1.0",
+    "@lok-tech/cli-win32-arm64": "0.1.0",
+    "@lok-tech/cli-win32-x64": "0.1.0"
   },
   "scripts": {
     "test": "node --test test/*.test.js"

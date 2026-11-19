@@ -1,5 +1,5 @@
 import { defineConfig } from "vite";
-import { hearthImages } from "hearth/vite";
+import { hearthImages } from "@lok-tech/hearth/vite";
 
 // `hearth build` runs `vite build` with --outDir, --emptyOutDir and --manifest,
 // then renders the pages. Add one `input` entry per script/style bundle a page needs.

@@ -419,7 +419,7 @@ now planned as features. Phases 1 to 4, 6, 7 and 9 are implemented; this round c
 
 | # | Feature | Kind | Phase |
 |---|---|---|---|
-| G16 | Responsive images: `srcset` widths and `sizes` | `hearth/vite` plugin, manifest, `picture` | 9 |
+| G16 | Responsive images: `srcset` widths and `sizes` | `@lok-tech/hearth/vite` plugin, manifest, `picture` | 9 |
 | G17 | `pictureSet`: hashed, art-directed `<picture>` (`media` sources) | Helper | 9 |
 | G18 | Tag-based invalidation: `Meta.Tags`, `Site.InvalidateTags` | Cache + `Site` | 10 |
 | G19 | Several processes on one cache directory | Cache | 11 |

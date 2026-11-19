@@ -14,7 +14,7 @@ and a web server serves those files at static speed.
 ## Quick start
 
 ```sh
-npm i -D hearth vite sharp      # the CLI is a Go binary in a per-platform package
+npm i -D @lok-tech/hearth vite sharp      # the CLI is a Go binary in a per-platform package
 npx hearth init mysite && cd mysite && npm install
 npm run check                   # validate routes, data, locales; trial-render every page
 npm run build                   # -> dist/public (deploy anywhere), dist/templates (for a Go server)
@@ -346,7 +346,7 @@ encoder, not real sharp, and browsers' `srcset` selection was not observed.
 cmd/hearth/       the CLI
 pkg/hearth/       the public Go package (the only importable one)
 internal/         route, render, i18n, manifest, cache, config, build, dev, starter, ...
-npm/hearth/       npm wrapper and the hearth/vite image plugin; scripts/build-npm.mjs builds the platform packages
+npm/hearth/       npm wrapper and the @lok-tech/hearth/vite image plugin; scripts/build-npm.mjs builds the platform packages
 example/          Postgres example, its own Go module
 deploy/           Caddy, nginx, compose, verify.sh
 docs/             README.md (index), PLAN.md, ARCHITECTURE.md, DEVELOPMENT.md, DEPLOY.md, MIGRATING-FROM-ASTRO.md

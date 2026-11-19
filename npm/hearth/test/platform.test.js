@@ -4,9 +4,9 @@ import { PLATFORMS, binaryName, platformPackage } from "../lib/platform.js";
 import pkg from "../package.json" with { type: "json" };
 
 test("known platforms map to scoped packages", () => {
-  assert.equal(platformPackage("darwin", "arm64"), "@hearth/cli-darwin-arm64");
-  assert.equal(platformPackage("win32", "x64"), "@hearth/cli-win32-x64");
-  assert.equal(platformPackage("linux", "x64"), "@hearth/cli-linux-x64");
+  assert.equal(platformPackage("darwin", "arm64"), "@lok-tech/cli-darwin-arm64");
+  assert.equal(platformPackage("win32", "x64"), "@lok-tech/cli-win32-x64");
+  assert.equal(platformPackage("linux", "x64"), "@lok-tech/cli-linux-x64");
 });
 
 test("unknown platforms return null", () => {
