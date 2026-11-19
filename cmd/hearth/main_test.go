@@ -115,3 +115,17 @@ func TestCheckRejectsUnknownSSREntry(t *testing.T) {
 		t.Fatalf("%d %q", c, e)
 	}
 }
+
+func TestCheckWarnsAboutEnvPrefixButStillPasses(t *testing.T) {
+	site := writeSite(t)
+	os.MkdirAll(filepath.Join(site, "src"), 0o755)
+	os.WriteFile(filepath.Join(site, "src", "entry.ts"), []byte("fetch(import.meta.env.PUBLIC_API_URL)"), 0o644)
+	c, o, e := do("check", "-site", site)
+	if c != 0 || !strings.Contains(o, "ok") || !strings.Contains(e, "warning") || !strings.Contains(e, "PUBLIC_API_URL") {
+		t.Fatalf("%d %q %q", c, o, e)
+	}
+	os.WriteFile(filepath.Join(site, "vite.config.ts"), []byte("export default { envPrefix: ['VITE_', 'PUBLIC_'] }"), 0o644)
+	if c, _, e := do("check", "-site", site); c != 0 || strings.Contains(e, "warning") {
+		t.Fatalf("%d %q", c, e)
+	}
+}

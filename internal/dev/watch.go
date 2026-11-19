@@ -93,7 +93,12 @@ func NewWatch(ctx context.Context, siteDir string, cfg *config.Config, log io.Wr
 	}
 	rl := newReloader()
 	go rl.watch(ctx, site, out)
-	return rl.middleware(h), stop, nil
+	// the proxy sits outside live reload, so backend responses are never rewritten
+	ph, err := withProxy(cfg.Dev.Proxy, rl.middleware(h))
+	if err != nil {
+		return fail(err)
+	}
+	return ph, stop, nil
 }
 
 // watcher reads the latest Vite output and serves its files.

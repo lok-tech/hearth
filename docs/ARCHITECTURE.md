@@ -28,7 +28,7 @@ Dependency direction: `cmd/hearth -> internal/{build,dev,starter,config} -> pkg/
 | `internal/dev` | `NewMock` (dev-mode Site per request), `NewLive`, `NewPreview` (proxies) | config, route, cache (path mapping only), `pkg/hearth` |
 | `internal/starter` | embedded starter (`template/`), `Init` | fsutil |
 | `internal/config` | `hearth.config.json` schema and validation | cache (`ValidHost`) |
-| **`pkg/hearth`** | **the only public package**: `Site`, `Options`, `Handler`, `Prerender`, `Export`, `Warm`, `Poll` | every core package below |
+| **`pkg/hearth`** | **the only public package**: `Site`, `Options`, `Handler`, `Prerender`, `WarmSitemap`, `Export`, `Warm`, `Poll` | every core package below |
 | `internal/render` | layout + templates + helpers, `PageData` | route, manifest, i18n, data |
 | `internal/route` | `pages/` file path to route, matching, `Page.MockFile` | none |
 | `internal/i18n` | catalogs, plurals, `IsRTL`, **`URLs`** (language to URL mapping) | none |
@@ -176,6 +176,7 @@ URL) and `Manifest.Lenient` (placeholder for unknown assets) are runtime-only (`
 - `live`: reverse proxy to `dev.server`. `preview`: a file from `dist/public` (mapped with `cache.RelPath`), else
   the same proxy.
 - `hearth dev` starts Vite itself in **watch mode** (`dev.NewWatch`): `vite build --watch` into `node_modules/.cache/hearth-dev`, one address for pages and assets, the latest Vite manifest overlaid onto the source bundle per request (last good one kept while a rebuild empties the directory), `.vite`/`.hearth` never served. No HMR, but **live reload** (`internal/dev/reload.go`): a poller fingerprints `pages layouts partials locales data public` plus the Vite manifest's mtime (`src/` is left out so the reload follows the rebuild, never precedes it), and after a 150 ms settle it signals browsers over server-sent events at `/__hearth/reload`; a small script is injected before `</body>` of HTML responses only. Setting `vite.devURL` selects the older proxy mode instead (run `vite` yourself; `{{asset}}` points at it and templates see `.Dev`).
+- `dev.proxy` (`internal/dev/proxy.go`, validated in `config.ValidateProxy`, so `check` and `config.Load` reject bad entries): `withProxy` wraps the whole dev handler in both modes, outside live reload, so a prefix is checked before page routes, the Vite fallback and reload injection. Longest prefix first, whole path segments, `httputil.ReverseProxy` with `Rewrite` (`SetURL` sets the backend `Host`, `SetXForwarded`). `preview`, `-live` and production never read it.
 
 ## Files that look odd on purpose
 

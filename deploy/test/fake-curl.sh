@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A pretend server for testing verify.sh without a network: stands in for curl.
-# FAKE_BROKEN=<mode> makes one behaviour wrong: slash | index | dotfile | traversal | asset | html-cache | etag | query | dynamic | 404-immutable | no-404-body | unicode
+# FAKE_BROKEN=<mode> makes one behaviour wrong: slash | index | dotfile | traversal | asset | html-cache | etag | query | dynamic | 404-immutable | no-404-body | unicode | slash-param | slash-loc | dir-404 | dir-listing
 set -u
 method=GET url="" inm="" body=1
 args=("$@")
@@ -43,6 +43,18 @@ case "$bare" in
   /about/)
     [ "$broken" = slash ] && { out 200 "${page_headers[@]}"; exit 0; }
     out 301 'Location: http://fake.test/about' ;;
+  /post/1/)
+    [ "$broken" = slash-param ] && { out 200 "${page_headers[@]}"; exit 0; }
+    [ "$broken" = slash-loc ] && { out 301 'Location: /post/1/'; exit 0; }
+    out 301 'Location: http://fake.test/post/1' ;;
+  /photos)
+    # a route /photos next to a public/photos/ directory without index.html: the Go page must answer
+    [ "$broken" = dir-404 ] && { out 404; exit 0; }
+    if [ "$body" = 1 ]; then
+      if [ "$broken" = dir-listing ]; then echo '<html><h1>Index of /photos</h1><pre><a href="a.jpg">a.jpg</a></pre></html>'; else echo '<h1>Photos</h1>'; fi
+      exit 0
+    fi
+    out 200 "${page_headers[0]}" ;;
   /about/index.html)
     [ "$broken" = index ] && { out 200 "${page_headers[@]}"; exit 0; }
     out 301 'Location: /about' ;;

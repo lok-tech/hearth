@@ -50,6 +50,9 @@ type Collection struct {
 type DevConfig struct {
 	Server string `json:"server"` // URL of the project's Go server (live / preview)
 	Addr   string `json:"addr"`   // listen address, default 127.0.0.1:3000
+	// Proxy maps a path prefix to a backend URL for `hearth dev` (mock and watch modes):
+	// {"/api": "http://localhost:8080"}. Dev only; preview and production ignore it.
+	Proxy map[string]string `json:"proxy"`
 }
 
 // Load reads hearth.config.json from siteDir. A missing file yields defaults.
@@ -124,8 +127,50 @@ func (c *Config) validate() error {
 			return fmt.Errorf("hearth.config.json: assetBase %q must be an http(s) origin or a path starting with /", b)
 		}
 	}
+	if err := ValidateProxy(c.Dev.Proxy); err != nil {
+		return err
+	}
 	if v := c.Vite; v != nil && len(v.Command) == 0 {
 		return fmt.Errorf("hearth.config.json: vite.command must not be empty")
+	}
+	return nil
+}
+
+// reservedProxyPaths are answered by Hearth itself and can never be proxied.
+var reservedProxyPaths = []string{"/healthz", "/robots.txt", "/sitemap.xml"}
+
+// ValidateProxy checks dev.proxy: every prefix is an absolute path of plain segments without a
+// trailing slash (so "/api" and "/api/" cannot both be listed), never "/" (it would swallow the
+// site) and never one of Hearth's own paths; every target is an absolute http(s) URL.
+func ValidateProxy(m map[string]string) error {
+	for prefix, target := range m {
+		bad := func(why string) error {
+			return fmt.Errorf("hearth.config.json: dev.proxy prefix %q %s", prefix, why)
+		}
+		switch {
+		case prefix == "/":
+			return bad("would proxy the whole site; list the backend paths (such as \"/api\") instead")
+		case !strings.HasPrefix(prefix, "/"):
+			return bad("must start with /")
+		case strings.HasSuffix(prefix, "/"):
+			return bad("must not end with / (write \"/api\", it already matches \"/api/x\")")
+		case strings.ContainsAny(prefix, "?#{}[]\\ \t") || strings.Contains(prefix, "%"):
+			return bad("must be a plain path (no query, fragment, spaces, braces or escapes)")
+		}
+		for _, seg := range strings.Split(prefix[1:], "/") {
+			if seg == "" || seg == "." || seg == ".." {
+				return bad("must not contain empty, \".\" or \"..\" segments")
+			}
+		}
+		for _, r := range reservedProxyPaths {
+			if prefix == r || strings.HasPrefix(prefix, r+"/") {
+				return bad("is served by Hearth itself and cannot be proxied")
+			}
+		}
+		u, err := url.Parse(target)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Fragment != "" {
+			return fmt.Errorf("hearth.config.json: dev.proxy[%q] = %q must be an absolute http(s) URL such as \"http://localhost:8080\"", prefix, target)
+		}
 	}
 	return nil
 }

@@ -67,6 +67,45 @@ func main() {
 }
 ```
 
+### Who needs which files
+
+| | Needs | Does not need |
+|---|---|---|
+| **Web server** (Caddy, nginx, CDN) | `dist/public`: static pages, hashed `assets/`, `404.html`, `sitemap.xml` and `sitemap-N.xml`, `robots.txt`, and everything copied from `public/`. Plus the cache directory, **read-only**, at `<cache>/current` (SSR sites) | `dist/templates`, `dist/manifest.json` |
+| **Go container** (`hearth.Site`) | `dist/templates` (embedded or read from a path) and the cache directory, **read-write** | `dist/public`, `dist/manifest.json` |
+
+What the code says, so you do not have to guess:
+
+- The Go server reads exactly one manifest, `templates/manifest.json` inside the bundle (asset URLs, image
+  variants, the `ssr` list, build id). `hearth build` also writes a copy at `dist/manifest.json`; nothing
+  loads that copy at runtime. A bundle without a manifest starts only in `Options.Dev`.
+- The Go server needs no `dist/public`. It answers `/sitemap.xml`, `sitemap-N.xml` and `/robots.txt` itself;
+  `hearth build` writes them into `dist/public` so a web server in front can serve them as files. If you serve
+  the files, redeploy them with each release so they match the bundle.
+- A static-only site needs `dist/public` and nothing else. Files in `public/` (favicon, `robots.txt`, images
+  that scripts load) only exist in `dist/public`: a Go container alone cannot serve them.
+
+### A route and a `public/` directory on the same path
+
+A route `/photos` (a page that lists them) and `public/photos/` (the image files) can coexist: the build puts
+the page at `dist/public/photos/index.html` and the images beside it. The case to check is the SSR one, where
+the page is not prebuilt and `public/photos/` has **no** `index.html`. A request for `/photos` must not be
+answered by the directory (a listing, a 404, or a redirect to `/photos/`): it has to fall through to the Go
+server. What the shipped configs do, read from their rules and **not run against a live server**:
+
+- **nginx** (`hearth.conf`): `try_files $uri $uri/index.html @cache` tests `$uri` as a *file*, so the
+  directory does not match; `$uri/index.html` does not exist; the request falls through to `@cache` and then
+  `@app`. No `autoindex` is set. No config change needed.
+- **Caddy** (`Caddyfile`): `file_server { canonical_uris false; pass_thru }`. With `canonical_uris false` there is
+  no redirect to `/photos/`, no `browse` means no listing, and `pass_thru` hands a directory with no index file to
+  the next handler (the cache layer, then `reverse_proxy`). No config change needed. If a Caddy version
+  answers 404 or a listing instead, the fallback below is the safe route.
+
+`VERIFY_DIR_COLLISION=/photos deploy/verify.sh <url>` checks it (200 HTML, no listing; add
+`VERIFY_DIR_COLLISION_TEXT` for text that only the Go page contains). **Fallback if it fails on your server:**
+give the files a distinct prefix (`public/photo-files/...`, served at `/photo-files/...`) so no route shares a
+path with a directory. Do not rely on server-specific tricks for it.
+
 ### The cache directory
 
 ```
@@ -91,13 +130,48 @@ Whatever server you use, it must do these seven things. `deploy/verify.sh` tests
    `<cache>/current`, then proxy. The query string never picks a file (the cache key is the path).
 2. **Never serve dotfiles.** Hides the `.tmp-*` files, `.git`, `.env`.
 3. **One URL per page.** `/x/` redirects (301) to `/x`, `/x/index.html` to `/x`, `/index.html` to `/`.
-   Otherwise the same page exists at three URLs and the canonical tag disagrees with the server.
+   Otherwise the same page exists at three URLs and the canonical tag disagrees with the server. Details
+   and a migration checklist: [Trailing slashes](#trailing-slashes-and-the-cutover-checklist).
 4. **Cache headers.** HTML: `public, max-age=0, must-revalidate` plus `ETag` (the same as the Go server's
    default `Options.CacheControl`, so file hits and renders behave alike). `/assets/*`:
    `public, max-age=31536000, immutable`; they are content-hashed.
 5. **Compress** HTML, CSS, JS, JSON, SVG.
 6. **`/healthz` is internal.** It reports version and counters. Allow private ranges only.
 7. **Mount the cache read-only** and run the Go server as a non-root user that owns it.
+
+### Trailing slashes and the cutover checklist
+
+Behaviour, checked against the code (`Site.resolve`, with a test) and read from the shipped configs:
+
+- `/x/` answers **301** to `/x`, for static pages, parameter routes and `ssr` pages alike. `/` is the only
+  path with a slash that is canonical and is never redirected. More than one trailing slash (`/x//`) goes
+  to `/x` in one hop from the Go server; the Caddy rule redirects to `/x/` first, so it takes two hops.
+- Language prefixes follow the same rule: `/he/` goes to `/he`, and `/he` is the Hebrew home page. In
+  subdomain/domain mode the language is the host, and `/` stays `/`.
+- **The query string is kept by nginx and dropped by the Go server and by the Caddy `redir`**: `/x/?a=1` goes
+  to `/x?a=1` on nginx (a `rewrite ... permanent` keeps the arguments) and to `/x` on the other two. Pages
+  never depend on the query (the cache key is the path), so this only matters for tracking parameters.
+- `/x/index.html` goes to `/x`, `/index.html` to `/`.
+- Hearth emits non-slash links itself (`.Link`, the sitemap, the canonical tag, hreflang). Hand-written
+  links, and data that carries URLs, are yours to keep slash-free.
+
+A site that used to serve both `/x` and `/x/` (many generators and older servers do) changes behaviour at
+cutover. **Before cutover:**
+
+1. Export the indexed URLs from the search console (Pages report, or the sitemap coverage export).
+2. Count those ending in `/`. Those are the URLs whose redirect you are about to depend on.
+3. Confirm each one answers 301 to its non-slash form, and that the target answers 200 (a script over the
+   export, or `VERIFY_SLASH` below for one of each kind).
+4. Confirm internal links, the sitemap and the `<link rel="canonical">` all use the non-slash form, so a
+   crawler is never sent through a redirect from your own pages.
+5. Keep the old URLs' redirects in place for as long as they were indexed; do not "tidy" them away.
+
+```sh
+# a static page and a parameter route: "<path>/" must be a 301 to "<path>"
+VERIFY_SLASH="/about /post/1" deploy/verify.sh https://example.com
+```
+
+`VERIFY_SLASH` takes paths separated by spaces or commas, written without the trailing slash.
 
 Known differences between servers:
 
@@ -204,16 +278,22 @@ deploy/verify.sh http://localhost:8080
 VERIFY_DYNAMIC=/post/1 VERIFY_DYNAMIC_MISSING=/post/nope deploy/verify.sh https://example.com
 VERIFY_404_TEXT="Page not found" deploy/verify.sh https://example.com   # the missing path shows pages/404.html
 VERIFY_UNICODE=/letter/%D7%90 deploy/verify.sh https://example.com      # a percent-encoded Hebrew parameter
+VERIFY_SLASH="/about /post/1" deploy/verify.sh https://example.com       # "<path>/" is a 301 to "<path>"
+VERIFY_DIR_COLLISION=/photos VERIFY_DIR_COLLISION_TEXT=Photos deploy/verify.sh https://example.com  # route vs public/ directory
 VERIFY_EXTERNAL=1 deploy/verify.sh https://example.com   # from outside: /healthz must be hidden
 ```
 
-`verify.sh` itself is tested against a fake server (`deploy/test/verify-selftest.sh`): a correct server passes and twelve
+`verify.sh` itself is tested against a fake server (`deploy/test/verify-selftest.sh`): a correct server passes and sixteen
 deliberate violations (slash, `index.html`, dotfile, traversal, asset and HTML headers, ETag, query, dynamic
-ETag, immutable 404, unbranded 404 body, failing Hebrew path) each fail. The compose file is validated by `docker-compose config`.
+ETag, immutable 404, unbranded 404 body, failing Hebrew path, a parameter-route slash form that answers 200 or
+redirects to the wrong place, a directory collision that answers 404 or a listing) each fail. The compose file is validated by `docker-compose config`.
 
 The Hebrew `{letter}` check (`VERIFY_UNICODE`) is **not yet verified against real Caddy or nginx**. The Go side
 writes the cache file under the UTF-8 name (tested), and the open question is only whether the web server maps
 the percent-encoded request path to that file name. If it fails on Caddy, that is where to look first.
+
+`VERIFY_SLASH` and `VERIFY_DIR_COLLISION` are likewise **not yet verified against real Caddy or nginx**; the
+directory-collision reading of both configs above comes from their rules, not from a run.
 
 The Caddy specifics most likely to need adjusting, if `verify.sh` fails there:
 

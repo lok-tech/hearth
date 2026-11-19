@@ -13,6 +13,11 @@
 #   VERIFY_404_TEXT="Page not found"  text the branded 404 page must contain (pages/404.html)
 #   VERIFY_UNICODE=/letter/%D7%90 a server-rendered URL with a percent-encoded non-ASCII parameter
 #                                 (a Hebrew letter), checked like VERIFY_DYNAMIC: render, then file
+#   VERIFY_SLASH="/about /post/1" paths (space or comma separated, no trailing slash): static page, parameter route...
+#                                 each "<path>/" must answer 301 with Location equal to "<path>"
+#   VERIFY_DIR_COLLISION=/photos  a route whose path is also a directory in public/ without an index.html: the
+#                                 URL must return the Go page (200 HTML), not a listing and not a 404
+#   VERIFY_DIR_COLLISION_TEXT=Photos  optional text the Go page must contain
 #   VERIFY_EXTERNAL=1             you are running from outside the private network: /healthz must be hidden
 #   CURL=curl                     the curl binary (tests substitute a fake)
 #
@@ -104,6 +109,12 @@ check_redirect "trailing slash" "$PAGE/" "$PAGE"
 check_redirect "/index.html suffix" "$PAGE/index.html" "$PAGE"
 check_redirect "root /index.html" "/index.html" "/"
 
+# Every form listed in VERIFY_SLASH: the slash URL redirects to the same path without it.
+for p in ${VERIFY_SLASH//,/ }; do
+  p="/${p#/}"
+  check_redirect "slash form $p/" "$p/" "$p"
+done
+
 # --- nothing hidden is reachable ---
 for p in /.git/config /.env "$PAGE/.tmp-123456"; do
   resp=$(fetch GET "$p")
@@ -167,6 +178,27 @@ if [ -n "${VERIFY_DYNAMIC:-}" ]; then
 fi
 if [ -n "${VERIFY_DYNAMIC_MISSING:-}" ]; then
   expect_status "dynamic missing $VERIFY_DYNAMIC_MISSING" "$(fetch GET "$VERIFY_DYNAMIC_MISSING")" 404
+fi
+
+# A route and a public/ directory on one path (route /photos, files in public/photos/ with no index.html).
+# The file server must fall through to the Go server instead of listing the directory or answering 404.
+if [ -n "${VERIFY_DIR_COLLISION:-}" ]; then
+  d=$VERIFY_DIR_COLLISION
+  r=$(fetch GET "$d")
+  if expect_status "directory collision $d" "$r" 200; then
+    page=$(body "$d")
+    case "$(header "$r" content-type)" in
+      text/html*) ok "directory collision $d answers HTML" ;;
+      *) bad "directory collision content type" "$d gave '$(header "$r" content-type)', want text/html" ;;
+    esac
+    if grep -Eqi 'Index of /|<title>Directory listing|<pre><a href=' <<<"$page"; then
+      bad "directory collision listing" "$d returns a directory listing; the Go page must answer (docs/DEPLOY.md)"
+    elif [ -n "${VERIFY_DIR_COLLISION_TEXT:-}" ] && ! grep -qF -- "$VERIFY_DIR_COLLISION_TEXT" <<<"$page"; then
+      bad "directory collision body" "$d does not contain '$VERIFY_DIR_COLLISION_TEXT'; the Go page is not what answered"
+    else
+      ok "directory collision $d is the Go page, not a listing"
+    fi
+  fi
 fi
 
 # A non-ASCII parameter (voters: /letter/{letter} with a Hebrew letter). The request is percent-encoded;

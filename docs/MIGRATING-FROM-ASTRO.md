@@ -158,6 +158,29 @@ the entry script (`el.style.setProperty("--score", el.dataset.score!)`), or writ
 only for numbers (`html/template` filters unsafe values in a `style` attribute to `ZgotmplZ`, which fails
 safe).
 
+## 4b. `import.meta.env.PUBLIC_*` and other build-time values
+
+Astro exposes `PUBLIC_*` variables to client code; Vite exposes only `VITE_*` unless told otherwise, so a ported
+`import.meta.env.PUBLIC_API_URL` is silently `undefined`. Fix: in the site's `vite.config.ts`
+
+```ts
+export default defineConfig({
+  envPrefix: ["VITE_", "PUBLIC_"], // Hearth's starter already has this line
+  // ...
+});
+```
+
+- Set the values in `.env` / `.env.production` or the build environment; they are read when `hearth build` runs
+  Vite and baked into the bundle.
+- **Secrets rule:** everything under a prefix is public JavaScript. Keep tokens, database URLs and keys in the Go
+  server's environment, never under `PUBLIC_` or `VITE_`.
+- `hearth check` warns (never fails) when `src/**` uses `import.meta.env.NAME` and `vite.config.*` has no
+  `envPrefix` covering it.
+- A value that must change **without a rebuild** (an API origin per environment, a feature flag) should not be
+  baked in. Put it in page data in the handler and hand it to the script with `json`, as in section 4:
+  `<script type="application/json" id="config">{{json .Data.Config}}</script>`. Changing it needs
+  `site.Invalidate(...)`, not a JavaScript build.
+
 ## 5. The `/?t=` redirect script
 
 voters has an inline script that reads `?t=` and sends old links to the new page. It becomes an entry script. The
@@ -325,6 +348,13 @@ rep, err := hearth.Build(ctx, site, "dist/public")
   `hearth dev -live`, which proxies to your Go server (started with `Options.Dev`); a func that fails there fails
   the page, as in production.
 - `hearth preview` runs the production flow locally: a file if it exists, otherwise your Go server.
+- `hearth dev` renders from mock data, so a client that calls your backend needs `dev.proxy`
+  (`{"dev":{"proxy":{"/api":"http://localhost:8080"}}}`): requests under `/api` go to that URL first, before page
+  routes, with method, path, query, body and headers intact (longest prefix wins, whole path segments only, dev
+  only; `hearth check` validates it). With `vite.devURL` and a separate `vite` process, Vite's `server.proxy`
+  works too.
+- After a full `SetVersion` flip, refill the cache with `go site.WarmSitemap(ctx, 4)`; for a targeted change use
+  `site.Invalidate(...)`. A large warm costs real time and database load (see the README).
 
 ## 9. 404 and 410
 
@@ -418,7 +448,42 @@ Set `Cache-Control` yourself; Hearth does not touch responses it does not render
   each `.jpg`/`.png` into AVIF, WebP and the original, content-hashed, with `width` and `height` set.
 - **One size per format.** `maxWidth` (default 1600) caps it. `srcset` widths are **not supported**; responsive
   widths are a future item ([PLAN.md](PLAN.md), open item 7). Logos do not need them.
+- **Art direction (a logo that changes in dark mode, a different hero on mobile) is hand-written.**
+  `{{picture}}` has no `media` attribute. Write the `<picture>` yourself and keep the files in `public/`:
+
+```html
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="/brand/logo-dark.svg">
+    <img src="/brand/logo-light.svg" alt="Example" width="160" height="40">
+  </picture>
+  ```
+
+  The files live in `public/brand/` and are served at `/brand/...`. The first `<source>` whose `media` matches wins,
+  so put the most specific one first; the `<img>` is the default and carries `alt`, `width` and `height` (which
+  reserve the space and avoid layout shift). For a viewport change use `media="(max-width: 600px)"` with a
+  smaller file. `prefers-color-scheme` follows the operating system; if your site has its own theme switch, use two
+  images toggled by CSS instead.
+
+  `public/` files are copied as is and not hashed: no automatic cache-busting, so rename a file
+  (`logo-light-v2.svg`) when its content changes. A hashed variant-set helper is a possible future item
+  ([PLAN.md](PLAN.md)), not implemented.
 - For the largest above-the-fold image write the `<img>` yourself with `fetchpriority="high"` and no lazy loading.
+
+## 15b. Trailing slashes and cutover
+
+Hearth and the shipped Caddy and nginx configs answer `/x/` with a 301 to `/x` (`/` excepted; `/he/` goes to
+`/he`). If the Astro site served both forms, or was indexed with trailing slashes, check before cutover:
+
+1. Export the indexed URLs from the search console and count those ending in `/`.
+2. Confirm each one answers 301 to the non-slash form and the target answers 200.
+3. Confirm internal links, the sitemap and the canonical tag use the non-slash form.
+4. Run `VERIFY_SLASH="/about /candidate/1" deploy/verify.sh https://staging.example` (a static page and a
+   parameter route).
+
+The query string is kept by nginx and dropped by the Go server and the Caddy rule; see
+[DEPLOY.md](DEPLOY.md#trailing-slashes-and-the-cutover-checklist). A route that shares a path with a
+`public/` directory (`/photos` the page, `public/photos/` the images) needs `VERIFY_DIR_COLLISION=/photos`;
+see "A route and a `public/` directory on the same path" in DEPLOY.md.
 
 ## 16. Parity check
 
@@ -476,9 +541,10 @@ Verified by tests in this repository: every Go snippet above (`pkg/hearth/migrat
 output, handler outcomes 200/301/404/410, noindex meta and header, `{{entry}}`, the data block and attributes,
 sitemap `lastmod`, `search.json` through a mux and through `Options.Fallback`, `hearth.Build` writing `404.html`
 and no file for `ssr` pages or database rows); `json` in attributes and scripts (`internal/render/jsonattr_test.go`);
-the `/?t=` script under Node.
+the `/?t=` script under Node; `hearth check`'s `envPrefix` warning, `dev.proxy` (in-process, in-memory backends) and `Site.WarmSitemap` (`internal/build/check_test.go`, `internal/dev/proxy_test.go`, `pkg/hearth/warm_test.go`).
 
 Not verified: any of this against the real voters data or templates; the Astro features of voters that were
 not given here (its exact `/?t=` map, `renderTrend` output, JSON-LD) are assumed to be as described in the plan;
 the TypeScript was type-stripped and run, not type-checked with `tsc` and not run in a browser; the Python parity
-sketch was not run; Hebrew paths through a real Caddy; a Vite build of the voters entries.
+sketch was not run; Hebrew paths through a real Caddy; a Vite build of the voters entries; a real Vite build
+exposing a `PUBLIC_` variable; `dev.proxy` over real TCP and WebSockets.

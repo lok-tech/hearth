@@ -4,6 +4,11 @@ import { hearthImages } from "hearth/vite";
 // `hearth build` runs `vite build` with --outDir, --emptyOutDir and --manifest,
 // then renders the pages. Add one `input` entry per script/style bundle a page needs.
 export default defineConfig({
+  // Variables whose names start with one of these prefixes are read at build time and baked
+  // into the client bundle as import.meta.env.<NAME>. They are PUBLIC: anyone can read them in the
+  // shipped JavaScript, so never put a secret under a prefix. Set them in .env files or the
+  // build environment. Values that must change without a rebuild belong in page data instead.
+  envPrefix: ["VITE_", "PUBLIC_"],
   plugins: [
     // Turns src/images/**/*.{jpg,png} into AVIF + WebP + fallback, used as {{picture "name"}}.
     hearthImages({ dir: "src/images", maxWidth: 1600 }),

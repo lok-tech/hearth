@@ -37,6 +37,15 @@ func TestInitStarterWritesWorkingSite(t *testing.T) {
 	if errs := build.Check(dir, cfg); len(errs) != 0 {
 		t.Fatalf("starter fails its own check: %v", errs)
 	}
+	vc, _ := os.ReadFile(filepath.Join(dir, "vite.config.ts"))
+	if !strings.Contains(string(vc), `envPrefix: ["VITE_", "PUBLIC_"]`) {
+		t.Errorf("starter vite.config.ts lacks envPrefix:\n%s", vc)
+	}
+	// a PUBLIC_ variable in the starter's own sources raises no warning
+	os.WriteFile(filepath.Join(dir, "src", "env.ts"), []byte("export const api = import.meta.env.PUBLIC_API_URL;"), 0o644)
+	if w := build.Warnings(dir); len(w) != 0 {
+		t.Errorf("starter warns about PUBLIC_: %v", w)
+	}
 }
 
 // The build runs Vite as `<command> --outDir <dir> --emptyOutDir --manifest`. This stand-in writes what

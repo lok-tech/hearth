@@ -94,6 +94,15 @@ func run() error {
 		}
 	}()
 
+	// A new bundle starts with an empty cache. Fill it from the sitemap in the background so the
+	// first crawler burst finds files; the site already serves (and caches) pages while this runs.
+	// Do the same after a full site.SetVersion; use site.Invalidate for targeted changes.
+	go func() {
+		if rep, err := site.WarmSitemap(ctx, 4); err != nil || len(rep.Failures) > 0 {
+			slog.Warn("warm sitemap", "ok", rep.OK, "failures", len(rep.Failures), "err", err)
+		}
+	}()
+
 	srv := &http.Server{
 		Addr:              env("ADDR", ":8080"),
 		Handler:           site,

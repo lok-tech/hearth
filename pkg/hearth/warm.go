@@ -104,3 +104,43 @@ func (s *Site) WarmPaths(ctx context.Context) ([]string, error) {
 	sort.Strings(out)
 	return out, nil
 }
+
+// WarmSitemap renders every page the sitemap lists, in every language, through the same engine
+// a visitor's request uses (it is Prerender over the sitemap's merged path list: static pages,
+// `ssr` pages, SitemapURLs and SitemapEntries). Use it after SetVersion, which empties the whole
+// cache:
+//
+//	site.SetVersion("v43")
+//	go site.WarmSitemap(ctx, 4)
+//
+// Static and `ssr` pages are rendered first, then the listed pages, so a partial warm still covers
+// the pages that matter most. concurrency bounds parallel pages on top of Options.MaxConcurrent
+// and each render keeps Options.RenderTimeout. Cancelling ctx stops the run: pages not yet started
+// are reported as failures with the context's error. Each page is written under the cache
+// version that was active when its render began, so a SetVersion during the warm cannot put
+// stale pages into the new version. A large site costs real time and data source load; the
+// cache is already useful while the warm runs. An error from SitemapURLs/SitemapEntries is returned
+// with an empty report.
+func (s *Site) WarmSitemap(ctx context.Context, concurrency int) (PrerenderReport, error) {
+	var first, rest []string
+	seen := map[string]bool{}
+	for _, pat := range s.routes.Patterns() {
+		pg, _ := s.routes.Lookup(pat)
+		if !pg.IsDynamic() && !seen[pg.URL()] {
+			seen[pg.URL()] = true
+			first = append(first, pg.URL())
+		}
+	}
+	extra, err := s.sitemapEntries(ctx)
+	if err != nil {
+		return PrerenderReport{}, fmt.Errorf("hearth: warm sitemap: %w", err)
+	}
+	for _, e := range extra {
+		if !seen[e.Path] {
+			seen[e.Path] = true
+			rest = append(rest, e.Path)
+		}
+	}
+	sort.Strings(first)
+	return s.Prerender(ctx, append(first, rest...), concurrency), nil
+}

@@ -108,6 +108,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 			errs = append(errs, e)
 			fmt.Fprintln(stderr, "  -", e)
 		}
+		for _, w := range build.Warnings(*site) {
+			fmt.Fprintln(stderr, "  ! warning:", w) // never changes the exit code
+		}
 		if len(errs) > 0 {
 			fmt.Fprintf(stderr, "hearth: check found %d problem(s)\n", len(errs))
 			return 1

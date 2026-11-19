@@ -89,11 +89,15 @@ func within(root, p string) bool {
 
 // NewMock serves the source tree through a hearth.Site in Dev mode, rebuilt on every request so
 // edits to templates, locales and mock files show without a restart. It is the same engine a
-// production server runs; only the data differs. Dynamic pages read pages/<path>.mock.json: an
+// production server runs; only the data differs. Paths under a dev.proxy prefix go to their backend first. Dynamic pages read pages/<path>.mock.json: an
 // object mapping the parameter value to the page data, with "*" as the fallback. Paths that
 // match no page go to the Vite dev server when configured (HMR assets).
 func NewMock(siteDir string, cfg *config.Config) (http.Handler, error) {
-	return newMock(siteDir, cfg, nil)
+	h, err := newMock(siteDir, cfg, nil)
+	if err != nil {
+		return nil, err
+	}
+	return withProxy(cfg.Dev.Proxy, h)
 }
 
 // newMock is NewMock with an optional watcher: when set, assets come from its Vite build output

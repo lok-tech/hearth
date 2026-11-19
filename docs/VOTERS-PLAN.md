@@ -252,3 +252,160 @@ These are not Hearth changes; listed so nothing is lost.
 Update [PLAN.md](PLAN.md) as phases land: remove open items 3 and 7, and the "handlers attach to
 `[param]` routes only" limit, and add the new decisions (the `ssr` list, `Funcs`, bundle format 2) to the
 decisions log. Every item above is unverified against real voters data until the pilot runs.
+
+---
+
+# Round 2: more general gaps (2026-11-19)
+
+Scope: **Hearth only.** voters.co.il is the example that exposed these needs, not the target. Each item is
+written as a feature any site would use, and anything that is only voters' own port work (its Go module,
+its formatters, its redirect store, its `search.json`) is out of this plan. Phases 1 to 4 above are
+implemented; this round continues the numbering.
+
+| # | Feature | Kind | Phase |
+|---|---|---|---|
+| G10 | Public build-time env vars reach the client | Starter, `check` warning, docs | 6 |
+| G11 | Dev proxy for backend paths in `hearth dev` | Config option, docs | 6 |
+| G12 | Warm the cache from the sitemap after a flip | `Site.WarmSitemap`, docs | 6 |
+| G13 | Hand-written `<picture>` for art direction (dark mode logos) | Docs | 7 |
+| G14 | Trailing-slash behaviour and migration checklist | Docs, `verify.sh` | 7 |
+| G15 | Which server needs which files; route vs `public/` path collision | Docs, `verify.sh` | 7 |
+
+## Phase 6: code
+
+### G10. Public build-time env vars
+
+**Problem.** Frontends commonly read `import.meta.env.PUBLIC_*` (Astro, Next-style naming). Vite exposes
+only `VITE_*` unless `envPrefix` is set, so a client silently loses its API URL. No Hearth doc mentions it.
+
+**Design.**
+1. The starter `vite.config.ts` sets `envPrefix: ['VITE_', 'PUBLIC_']`, with a comment that every prefixed
+   variable is baked into the client bundle and is public.
+2. Docs (README and the migration guide): set `envPrefix` in the site's Vite config; values are fixed at
+   build time; never put a secret under a prefix.
+3. Values that must change without a rebuild do not belong in the bundle. Document the pattern: the
+   handler puts the value in page data, the template writes it with `json` into a
+   `<script type="application/json">` or a `data-*` attribute, the entry script reads it. Changing it then
+   needs `Invalidate`, not a JS rebuild.
+4. `hearth check` warns when `src/**` mentions `import.meta.env.<NAME>` and the site's `vite.config.*` has
+   no `envPrefix` that covers `<NAME>`. Text scan only, no Vite run. A warning, never an error; a miss is
+   acceptable, a false failure is not.
+
+**Tests.** Warns for `PUBLIC_X` without a matching prefix; silent for `VITE_X` and when the prefix is
+configured; the starter still passes `hearth check`.
+
+### G11. Dev proxy for backend paths
+
+**Problem.** Most sites call a backend (`/api`, uploads, short links) in development. `hearth dev` in watch
+mode proxies nothing, so those calls fail. With `vite.devURL` set, unmatched paths go to Vite, so Vite's
+`server.proxy` works, but this is undocumented.
+
+**Design.** `dev.proxy` in `hearth.config.json`: a map from path prefix to target URL, for example
+`{"/api": "http://localhost:8080"}`.
+1. Applies to `hearth dev` in both modes, checked before page routes and the Vite fallback, longest prefix
+   first. Matches on a path-segment boundary (`/api` matches `/api` and `/api/x`, not `/apiary`).
+2. Validation: absolute `http` or `https` targets, prefixes start with `/`, a bare `/` is refused (it would
+   swallow the site), and `/healthz`, `/robots.txt`, `/sitemap.xml` cannot be proxied.
+3. Dev only. `preview` and production ignore it (routing there is the web server's job). `hearth check`
+   validates it.
+4. Docs also show the `vite.devURL` + Vite `server.proxy` alternative.
+
+**Tests.** A request under `/api` reaches a test backend with the original path and query; a page route is
+not shadowed; `/apiary` is not proxied; bad config values fail with a clear message. In-process handler
+tests only, since real TCP binding is blocked in the sandbox like the existing dev tests.
+
+### G12. Warm the cache from the sitemap
+
+**Problem.** `SetVersion` empties every cached page, so the first crawler burst re-renders them all
+(thousands of pages on a large site). `Warm` and `WarmPaths` exist, but the docs do not say how to drive a
+full warm.
+
+**Design.**
+1. `Site.WarmSitemap(ctx, concurrency)` takes the same merged path list the sitemap uses (static pages,
+   `ssr` pages, `SitemapURLs`/`SitemapEntries`) and renders every path in every language through the
+   existing warm path, returning a report like `Prerender` (OK count, failures by path). No second render
+   path.
+2. Honours `MaxConcurrent` and `RenderTimeout`, and stops when `ctx` is cancelled. Output is written under
+   the version active when each render began, so a flip during a warm cannot write stale pages into the
+   new version.
+3. Order: `ssr` and static pages first, then the rest, so a partial warm still covers the heaviest pages.
+4. Docs recipe: `Invalidate` for targeted changes; `SetVersion` for a full flip, then
+   `go site.WarmSitemap(ctx, 4)`. State plainly that a large warm costs real time and database load, and
+   that the cache is already useful while it runs.
+
+**Tests.** After `SetVersion` and `WarmSitemap`, every sitemap path is a hit (`Hits` rises, `Renders` does
+not); an `ssr` page is warmed through its handler; a failing handler is reported, not fatal; a cancelled
+context stops early; a flip mid-warm does not write into the new version.
+
+### Phase 6 status (implemented 2026-11-19)
+
+G10, G11 and G12 are implemented and tested; see the matching rows in the [PLAN.md](PLAN.md) decisions log.
+- **G10**: starter `envPrefix`, `build.Warnings` (printed by `hearth check`, never fails it), README and
+  migration guide (section 4b). Tests: `internal/build/check_test.go`, `cmd/hearth/main_test.go`,
+  `internal/starter/starter_test.go`.
+- **G11**: `dev.proxy` (`internal/config.ValidateProxy`, `internal/dev/proxy.go`), docs incl. the Vite
+  `server.proxy` alternative. Tests are in-process only: in-memory backends through the existing `memTransport`
+  and `httptest.NewRecorder`; no sockets.
+- **G12**: `Site.WarmSitemap`, README recipe, example warms at startup. Tests: `pkg/hearth/warm_test.go`.
+- Deviations: a prefix with any trailing slash is refused (rather than normalised); `WarmSitemap` also returns an
+  `error` (the entries callbacks can fail) next to the `PrerenderReport`.
+- Unverified: a real Vite build exposing a `PUBLIC_` variable, `dev.proxy` over TCP/WebSockets, and a large warm.
+
+## Phase 7: docs and checks
+
+### G13. Art-directed `<picture>`
+
+No code. `{{picture}}` emits AVIF/WebP sources and a fallback, with no `media` attribute. For logos or hero
+images that change with `prefers-color-scheme` or viewport, write the `<picture>` by hand with
+`<source media="...">` and keep the files in `public/` (copied as is, not hashed). Say so in the README
+Images section and the migration guide: `picture` is for `src/images/**`, hand-written markup is for art
+direction. A hashed, optimised variant set would be a separate `pictureSet` helper, only if a site needs it.
+
+### G14. Trailing slashes
+
+Hearth and the bundled Caddy/nginx configs 301 `/x/` to `/x`. Sites that used to serve both forms should
+know. Docs: a short "before cutover" checklist (export indexed URLs from the search console, count those
+ending in `/`, confirm each 301s to the canonical form, confirm internal links and the sitemap use the
+non-slash form). `verify.sh` gets a `VERIFY_SLASH` case (the slash form answers 301 with `Location` equal to
+the non-slash path, for a static page and a parameter route), added to the fake-curl self-test with one
+broken mode.
+
+### G15. Who needs which files; route vs `public/` collisions
+
+- DEPLOY.md gets a table. **Web server (Caddy/nginx/CDN):** `dist/public` (static pages, hashed assets,
+  `404.html`, `sitemap.xml`, `robots.txt`, everything copied from `public/`) plus the cache directory read
+  only. **Go container:** `dist/templates` only, plus the cache directory it writes.
+- A route and a `public/` directory can share a path (`/photos` the page, `public/photos/` the images).
+  With `pass_thru` a directory without an `index.html` must fall through to Go. Add a `VERIFY_DIR_COLLISION`
+  case to `verify.sh` (a directory path without an index returns the Go page, not a listing or a 404), with a
+  fake-curl broken mode. Real Caddy confirmation stays under "Still unverified" in PLAN.md. Document the
+  fallback if it fails: give the files a distinct prefix.
+
+### Phase 7 status (implemented 2026-11-19)
+
+Docs and `verify.sh` only; the one code change is a test pinning the documented redirect shape.
+- **G13**: art-directed `<picture>` snippet and the "not hashed, rename the file" note in the README Images section
+  and the migration guide (section 15); `pictureSet` recorded as an open item in PLAN.md, not built.
+- **G14**: behaviour verified from `Site.resolve` (`TestTrailingSlashRedirectShape`) and the configs. Finding the plan did not
+  have: the query string is dropped by the Go server and by Caddy, kept by nginx. DEPLOY.md and the migration guide
+  (15b) carry the cutover checklist. `VERIFY_SLASH` added.
+- **G15**: DEPLOY.md "Who needs which files" table (the only manifest the server reads is `templates/manifest.json`;
+  `dist/manifest.json` is an unused copy) and the route vs `public/` section. Both shipped configs should fall through to
+  Go by reading their rules, so no config change; fallback is a distinct prefix. `VERIFY_DIR_COLLISION` added.
+- Self-test: slash-param, slash-loc, dir-404, dir-listing broken modes added (16 modes total).
+- Unverified: all of it against a real Caddy or nginx.
+
+## Not in this plan
+
+Site-specific port work (a site's own Go module, formatters, data logic, redirect store, `search.json`,
+Dockerfile and Go version). The migration guide already shows the patterns Hearth supports for them.
+
+## Order and acceptance (round 2)
+
+1. **Phase 6** (G10, G11, G12). Done when the starter's Vite build exposes a `PUBLIC_` variable, `hearth
+   check` warns without `envPrefix`, `hearth dev` proxies a prefix to a test backend, and `WarmSitemap`
+   leaves every sitemap path as a cache hit.
+2. **Phase 7** (G13, G14, G15). Done when `verify-selftest.sh` catches broken slash and directory-collision
+   modes, and the README, migration guide and DEPLOY.md carry the notes and the container table.
+
+All unverified against a real Caddy, a real Vite build and a real site until one runs.

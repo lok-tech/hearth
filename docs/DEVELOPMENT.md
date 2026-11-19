@@ -136,4 +136,4 @@ Not done yet: the npm names (`hearth`, scope `@hearth`) have not been checked fo
   the page file, not the layout.
 - Go's `go:embed` skips dotfiles unless the pattern is `all:`; npm rewrites `.gitignore` on publish.
 - `node --test test/` fails on Node 24; use a glob: `test/*.test.js`.
-- `Site.Warm` sends requests without a `Host`; in subdomain/domain mode use `Prerender`.
+- `Site.Warm` sends requests without a `Host`; in subdomain/domain mode use `Prerender` or `WarmSitemap` (both set the host).

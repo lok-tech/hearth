@@ -218,3 +218,22 @@ func TestPollNotifiesOnChange(t *testing.T) {
 		t.Fatal("no notification")
 	}
 }
+
+// The documented trailing-slash behaviour (docs/DEPLOY.md): a 301 to the same path without the
+// slash, "/" excepted, the query string is not carried over, and several slashes collapse at once.
+func TestTrailingSlashRedirectShape(t *testing.T) {
+	s, _ := newTestSite(t, &fakeDB{})
+	for _, c := range []struct{ in, to string }{
+		{"/post/1/", "/post/1"},
+		{"/post/1/?utm=a", "/post/1"},
+		{"/post/1//", "/post/1"},
+	} {
+		w := get(s, c.in)
+		if w.Code != 301 || w.Header().Get("Location") != c.to {
+			t.Errorf("%s: %d Location %q, want 301 %q", c.in, w.Code, w.Header().Get("Location"), c.to)
+		}
+	}
+	if w := get(s, "/"); w.Code == 301 {
+		t.Errorf("/ must not redirect")
+	}
+}

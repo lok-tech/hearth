@@ -81,7 +81,8 @@ hashed URLs (and `assetBase`). Under a Vite dev server it emits the Vite client 
 for single files such as a favicon.
 
 `hearth.config.json` covers `baseURL`, `defaultLang`, `i18n` (path prefix, subdomain or domain),
-`assetBase` (S3/CDN), `vite`, `collections`, `ssr`, `funcs` and `dev`. Paths are identical in every language.
+`assetBase` (S3/CDN), `vite`, `collections`, `ssr`, `funcs` and `dev` (`addr`, `server`, `proxy`). Paths are
+identical in every language.
 
 Two settings are for sites that serve data from Go:
 
@@ -99,10 +100,59 @@ Two settings are for sites that serve data from Go:
   (candidate photos, say) pass through untouched and are referenced by plain path.
 - `{{picture "name" "alt"}}` is for `src/images/**` (logos, illustrations): AVIF + WebP + the original, hashed,
   with `width` and `height`.
+- **Art direction is hand-written.** `{{picture}}` emits AVIF and WebP `<source>` elements plus a fallback `<img>`,
+  with no `media` attribute, so it cannot swap an image by `prefers-color-scheme` or viewport. For a logo or
+  hero that changes (a dark and a light logo, a cropped mobile hero), write the `<picture>` yourself and keep
+  the files in `public/`:
+
+```html
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="/brand/logo-dark.svg">
+    <img src="/brand/logo-light.svg" alt="Example" width="160" height="40">
+  </picture>
+  ```
+
+  The files live in `public/brand/` and are served at `/brand/...`. The first `<source>` whose `media` matches wins,
+  so put the most specific one first; the `<img>` is the default and carries `alt`, `width` and `height` (which
+  reserve the space and avoid layout shift). For a viewport change use `media="(max-width: 600px)"` with a
+  smaller file. `prefers-color-scheme` follows the operating system; if your site has its own theme switch, use two
+  images toggled by CSS instead.
+
+  Files in `public/` are copied as is, **not hashed**, so there is no automatic cache-busting: when an image
+  changes, give it a new name (`logo-light-v2.svg`) rather than overwriting it, because CDNs and browsers may
+  keep the old bytes. A hashed variant-set helper is not implemented (open item in
+  [docs/PLAN.md](docs/PLAN.md)).
 - One size per format (`maxWidth`, default 1600). `srcset` widths are not supported yet; responsive widths are
   an open item in [docs/PLAN.md](docs/PLAN.md).
 
 Coming from Astro? See **[docs/MIGRATING-FROM-ASTRO.md](docs/MIGRATING-FROM-ASTRO.md)** (voters.co.il as the worked example).
+
+## Environment variables and build-time values
+
+Vite bakes `import.meta.env.<NAME>` into the client bundle **at build time**, and by default only for names that
+start with `VITE_`. The starter sets `envPrefix: ['VITE_', 'PUBLIC_']` in `vite.config.ts`, so code written for
+`PUBLIC_API_URL` (Astro-style naming) works. Rules:
+
+- **Everything under a prefix is public.** It ends up in JavaScript anyone can read. Never put a secret
+  (a token, a database URL, a private key) under `VITE_` or `PUBLIC_`; secrets stay in your Go server's
+  environment.
+- The value is fixed when `hearth build` runs Vite. Changing it means a rebuild and a redeploy of the assets.
+- `hearth check` warns (it never fails) when `src/**` reads `import.meta.env.NAME` and the site's
+  `vite.config.*` has no `envPrefix` covering `NAME`: without it the value is `undefined` in the browser. It is
+  a text scan, so a prefix computed in code is not understood and silences the warning. `MODE`, `DEV`,
+  `PROD`, `BASE_URL` and `SSR` are Vite's own and never warn.
+- **A value that must change without a rebuild does not belong in the bundle.** Let the handler put it in the
+  page data and let the template hand it to the script:
+
+  ```html
+  <script type="application/json" id="config">{{json .Data.Config}}</script>
+  ```
+
+  ```ts
+  const config = JSON.parse(document.getElementById("config")!.textContent!);
+  ```
+
+  Changing the value then needs `site.Invalidate(...)` (or a version flip), not a JavaScript rebuild.
 
 ## Serve it from your own Go server
 
@@ -155,6 +205,26 @@ drops the page in every language.
 sitemap index of `/sitemap-1.xml`, ... and `hearth.Build` writes the same files. `SitemapEntries` (paths only) is
 deprecated.
 
+**After a full flip, warm the cache.** `site.Invalidate("/post/42", "/candidates")` drops only the pages you
+name (all languages); use it for targeted changes. `site.SetVersion(v)` empties the whole cache, so the first
+crawler burst would re-render everything. Refill it from the sitemap in the background:
+
+```go
+site.SetVersion("v43")
+go func() {
+	rep, err := site.WarmSitemap(ctx, 4) // 4 pages at a time, on top of MaxConcurrent
+	log.Printf("warm: %d ok, %d failed, err %v", rep.OK, len(rep.Failures), err)
+}()
+```
+
+`WarmSitemap` renders every page the sitemap lists (static pages, `ssr` pages, `SitemapURLs`) in every language
+through the normal request path, so `MaxConcurrent`, `RenderTimeout`, singleflight and "only 200s are cached"
+all apply. `ssr` and static pages come first. A failing page is listed in `rep.Failures`, not fatal; cancelling
+`ctx` stops it. Each page is written into the cache version that was active when its render began, so a flip
+during the warm cannot put old pages into the new version. A large site costs real time and database load
+(one handler call per page per language); the site already serves, and caches on demand, while it runs. Lower
+the concurrency to protect the database. `Site.Warm(ctx, urls, n)` warms literal URLs instead.
+
 A complete Postgres-backed server with HTTP-level tests is in [`example/`](example/).
 
 ## CLI
@@ -164,8 +234,37 @@ A complete Postgres-backed server with HTTP-level tests is in [`example/`](examp
 | `hearth init [-name N] [DIR]` | write the Vite starter |
 | `hearth check` | validate and trial-render every page in every language, listing all problems |
 | `hearth build` | Vite, prerender, `dist/public` + `dist/templates` + `dist/manifest.json` |
-| `hearth dev` | pages rendered from source with `*.mock.json` data; `-live` proxies your Go server |
+| `hearth dev` | pages rendered from source with `*.mock.json` data; `dev.proxy` forwards backend paths; `-live` proxies your Go server |
 | `hearth preview` | the production flow locally: file if it exists, otherwise your Go server |
+
+### Calling a backend from `hearth dev`
+
+`hearth dev` renders pages from mock data, so calls to your real backend (`/api`, uploads, short links) have
+nowhere to go. List them in `hearth.config.json`:
+
+```json
+{ "dev": { "proxy": { "/api": "http://localhost:8080", "/uploads": "http://localhost:8080/files" } } }
+```
+
+- Works in both modes (the default watch mode, and `vite.devURL`). It is checked first: before page routes, the
+  Vite fallback and live reload. The longest prefix wins, and a prefix matches whole path segments (`/api`
+  takes `/api` and `/api/x`, not `/apiary`).
+- Method, path, query, body and headers pass through (including cookies and `Authorization`, and upgrade
+  requests such as WebSockets). The backend receives its own `Host`; `X-Forwarded-For`, `-Host` and `-Proto`
+  describe the original request. Redirects and `Set-Cookie` from the backend are not rewritten.
+- A prefix starts with `/`, has no trailing slash, is not `/` (that would swallow the site) and is not
+  `/healthz`, `/robots.txt` or `/sitemap.xml`; a target is an absolute `http` or `https` URL. `hearth check`
+  validates all of this; a backend that is down answers 502 with its address.
+- Development only: `hearth preview`, `hearth dev -live` and production ignore it (routing there is your web
+  server's or Go server's job; see [docs/DEPLOY.md](docs/DEPLOY.md)).
+- Alternative: with `vite.devURL` set and `vite` running in a second terminal, unmatched paths already go to the
+  Vite dev server, so Vite's own `server.proxy` does the same job:
+
+  ```ts
+  server: { proxy: { "/api": "http://localhost:8080" } }
+  ```
+
+  Use one or the other for a given prefix; `dev.proxy` runs first.
 
 ## Deploying
 

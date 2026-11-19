@@ -43,7 +43,11 @@ of this page. See [DEPLOY.md](DEPLOY.md) for serving and the repository README f
 | Vite entries | `manifest.json` carries `entries` (`name -> {js, css[], preload[]}`) resolved from the whole Vite manifest (static imports, recursive, cycle-safe, de-duplicated; CSS of imported chunks first). `{{entry "src/site.ts"}}` emits the stylesheet links, `modulepreload` hints and the module script; in Vite dev-server mode the client and module script; unknown entries are placeholders in lenient mode and an error otherwise. `assets` keys are unchanged, so `{{asset}}` still works. This changed the manifest meaning, so `BundleFormat` is 3. Dynamic imports are not preloaded. |
 | `json` helper | Returns `template.JS`: inserted verbatim in `<script type="application/json">` and attribute-escaped in `data-x="{{json .X}}"`, both round-trip (tests). It used to return `template.HTML`, which `html/template` double-encoded inside a script. No `jsonAttr` helper. |
 | Starter | Embedded in the binary, written by `hearth init`; refuses to overwrite and checks every target first. |
+| Public env vars (round 2, G10) | The starter's `vite.config.ts` sets `envPrefix: ['VITE_', 'PUBLIC_']` with a comment that prefixed values are baked into the client and public. `hearth check` prints a warning (`build.Warnings`, never an error, exit code unchanged) when `src/**` reads `import.meta.env.NAME` and the site's `vite.config.*` has no `envPrefix` covering `NAME`. Text scan only: `VITE_` always counts, string or array `envPrefix` is read, comments are stripped, Vite built-ins (`MODE`, `DEV`, `PROD`, `BASE_URL`, `SSR`) are ignored, and an `envPrefix` that is not a literal (a variable) silences the warning, because a miss is acceptable and a false warning is not. A missing vite config counts as "no prefix". Docs carry the secrets rule and the page-data + `json` pattern for values that change without a rebuild. |
+| `dev.proxy` (G11) | `dev.proxy` in `hearth.config.json` maps a path prefix to a backend URL for `hearth dev` in both watch mode and `vite.devURL` mode (`dev.NewMock` / `dev.NewWatch` wrap their handler). Checked before page routes, the Vite fallback and live reload (the proxy sits outside the reload middleware so backend HTML is never injected), longest prefix first, whole path segments. `httputil.ReverseProxy` with `Rewrite`: the backend gets its own `Host`, `X-Forwarded-For/Host/Proto` describe the original request, path/query/body/headers/upgrades pass through; redirects and cookies are not rewritten. Validation (`config.ValidateProxy`, so `config.Load` and `check` both enforce it): prefix starts with `/`, **no trailing slash at all** (stricter than the plan: this removes the `/api` vs `/api/` duplicate class instead of normalising it), plain segments only (no `.`, `..`, empty, query, fragment, space, braces, `%`), never `/`, never `/healthz`, `/robots.txt`, `/sitemap.xml` (or beneath them), never the live reload path; targets absolute http(s) without fragment. `/sitemap-N.xml` is not specially refused. `preview`, `-live` and production ignore the key. |
+| `Site.WarmSitemap` (G12) | `WarmSitemap(ctx, concurrency) (PrerenderReport, error)` = the sitemap's merged path list (static and `ssr` pages first, then `SitemapURLs`/`SitemapEntries`, de-duplicated) handed to `Prerender`, so it is the one engine: every language, host-mode aware (it sets the host, unlike `Warm`), `MaxConcurrent`, `RenderTimeout`, singleflight, only 200s cached. A cancelled `ctx` reports the remaining pages as failures with the context error. A render writes under the version active when it began (existing per-render version capture), so a flip mid-warm cannot write into the new version. An error from the entries callbacks is returned. The report type is `PrerenderReport` (not a new type). The example warms in the background at startup; `Invalidate` is for targeted changes. |
 | Security stance | Hearth makes unsafe cache paths impossible and escapes by context, but some safety is the caller's: validate route parameters, never vary a page by cookie, header or query, validate redirect targets, return errors instead of partial pages. Stated as rules in the README and enforced in the example's tests. |
+| Trailing slash, deploy file split, route vs `public/` (G13 to G15) | Docs and `verify.sh` only. Verified from code (with a test, `TestTrailingSlashRedirectShape`): `/x/` is a 301 to `/x`, `/` is excepted, repeated slashes collapse in one hop, languages follow the same rule, and **the Go server drops the query string** on that redirect; the Caddy `redir` drops it too, nginx keeps it (documented, configs unchanged). The Go container needs only `dist/templates` (it holds the only manifest it reads; `dist/manifest.json` is an unused copy) and the web server needs `dist/public`. Reading both shipped configs, a route path that is a `public/` directory without an index falls through to Go (nginx `try_files $uri` is a file test; Caddy `canonical_uris false` + `pass_thru`), so no config change was made; the fallback is a distinct prefix for the files. `{{picture}}` stays without `media`; art direction is hand-written `<picture>` over `public/` files. `verify.sh` gained `VERIFY_SLASH` (space or comma separated paths) and `VERIFY_DIR_COLLISION` (+ `_TEXT`), each with fake-curl passing and broken modes. |
 
 ## Layout
 
@@ -74,7 +78,7 @@ The repository:
 
 ```
 cmd/hearth/       the CLI
-pkg/hearth/       the public Go package: Site, Options, Handler, Prerender, Export, Warm, Poll
+pkg/hearth/       the public Go package: Site, Options, Handler, Prerender, WarmSitemap, Export, Warm, Poll
 internal/         cache route i18n manifest render data config build dev starter fsutil sitemap testutil archtest
 npm/hearth/       wrapper, bin, hearth/vite; scripts/build-npm.mjs makes the six platform packages
 example/          Postgres example, its own Go module (imports only pkg/hearth)
@@ -101,6 +105,7 @@ site.SetVersion("v42")                       // invalidate: flip the symlink, pa
 site.Subscribe(ctx, src)                     // src implements Watch(ctx, notify func(version string)) error
 hearth.Poll(fn, interval)                    // stdlib-only polling Source
 site.Warm(ctx, urls, n)                      // render and cache literal URLs
+site.WarmSitemap(ctx, n)                     // every sitemap path in every language, after SetVersion
 site.Prerender(ctx, paths, n)                // every language-neutral path in every language; errors reported per page
 site.Export(dir)                             // copy the rendered pages out (this is `hearth build`)
 mux.Handle("/", site)                        // plain http.Handler
@@ -154,6 +159,15 @@ cache, `assetBase`, and subdomain/domain i18n in the runtime `Site`.
   process.
 - Publishing to npm: the `hearth` name and the `@hearth` scope may not be available.
 - The five platform binaries other than darwin-arm64.
+- Round 2, Phase 7: `VERIFY_SLASH` and `VERIFY_DIR_COLLISION` against real Caddy or nginx (only the fake-server
+  self-test ran), in particular Caddy's `pass_thru` on a directory without an index file and nginx's `try_files` on
+  a directory path; the claim that the Caddy `redir` drops the query string and that nginx keeps it is from the
+  directives' documented behaviour, not a run.
+- Round 2, Phase 6: a real Vite build exposing a `PUBLIC_` variable through the starter's `envPrefix` (the
+  starter config and the `check` warning are tested as text); `dev.proxy` over real TCP (tests use in-memory
+  backends through `httptest.NewRecorder`, so WebSocket upgrades and streaming bodies are not exercised) and
+  `dev.NewWatch` with the proxy (the ordering is tested by composing `withProxy` with the reload middleware, not by
+  running Vite); `WarmSitemap` timing and database load on a large site (tests use a few pages).
 
 ## Known limits and open items
 
@@ -169,12 +183,14 @@ Open items, roughly in order of value:
 1. **Handlers see the whole request.** Reading cookies, `Authorization` or the query would cache personalised output.
    The README forbids it; stripping them from the request handed to handlers would make it impossible.
 2. **Tag-based invalidation** (routes declare tags; `InvalidateTags`), and a file-based generation scheme if a cache dir is ever shared.
-4. **`Site.Warm` does not set a `Host`**, so it cannot warm host-mode languages; `Prerender` does. Document or fix.
+4. **`Site.Warm` does not set a `Host`**, so it cannot warm host-mode languages; `Prerender` and `WarmSitemap` do. Documented.
 5. **Pruning race.** A render that began before a flip can recreate its (pruned) version directory when it writes.
    Harmless but leaks a directory until the next prune.
 6. **`hearth dev` runs Vite in watch mode itself** (one port, live reload, no HMR) unless `vite.devURL` is set, which keeps the proxy mode where you run `vite` in a second terminal. The per-request `Site` rebuild in
    `mock` mode has not been measured on a large site.
-7. **Responsive image widths** (`srcset`).
+7. **Responsive image widths** (`srcset`), and possibly a hashed, optimised art-directed variant set (a
+   `pictureSet` helper with `media` sources) if a site needs more than hand-written `<picture>` over `public/` files.
+   Not implemented.
 8. **Publish**: check the npm names, then the platform packages first and `hearth` last (`scripts/build-npm.mjs`).
 9. **Repository hygiene**: Splitting `pkg/hearth` into its own module can wait until a release cadence difference appears.
 10. **The brief.** Rules from the original brief were not available when the starter was written; reconcile them
