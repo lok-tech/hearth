@@ -97,7 +97,7 @@ already done: a stray `internal/render` import in `internal/dev`; the build's `S
 3. Publish every platform package first, then `hearth` (`npm publish` in each directory).
 4. Tag the repository; Go users get `pkg/hearth` through the module version.
 
-The npm names are `@lok-tech/hearth` and `@lok-tech/cli-<os>-<cpu>` (`hearth` and `hearth-cli` are taken on npm). Packages are public (`publishConfig.access`). The installed binary is still `hearth`.
+The npm names are `@lok-tech/hearth` and `@lok-tech/cli-<os>-<cpu>` (`hearth` and `hearth-cli` are taken on npm). Packages are public (`publishConfig.access`). The installed binary is still `hearth`. The npm account uses 2FA: each `npm publish` asks for a one-time code, so run the publish loop in an interactive terminal.
 
 ## How to extend
 

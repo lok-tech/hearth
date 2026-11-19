@@ -180,17 +180,23 @@ Design limits (documented in the README):
   counters are in memory, so replicas sharing a cache directory are not protected from the stale-write race.
 - No Markdown.
 
-Open items, roughly in order of value:
+Closed for 0.1.0:
+
+- **Publish (was 8).** Done: `@lok-tech/hearth` and the six `@lok-tech/cli-*` packages are on npm at 0.1.0, the Go module is
+  `github.com/lok-tech/hearth`, tag `v0.1.0`. The website installs the registry version.
+- **The brief (was 10).** Reconciled against `HEARTH_PROMPT.md`: shared CSS as a separate hashed file and page-specific
+  entries are what `{{entry}}` already does; the two rules the starter README lacked (tiny page data as inline JSON, never
+  inline shared code) are in the README's "Frontend rules". The starter's own README gets them in the next release,
+  because it is embedded in the binary and 0.1.0 is already published.
+- **Repository hygiene (was 9).** Decision: `pkg/hearth` stays in this module until a release cadence difference appears.
+
+Known limits after 0.1.0 (none blocks use; each needs a code change and so a 0.1.x/0.2 release):
 
 1. **Handlers see the whole request.** Reading cookies, `Authorization` or the query would cache personalised output.
    The README forbids it; stripping them from the request handed to handlers would make it impossible.
 2. **Tag-based invalidation** (routes declare tags; `InvalidateTags`), and a file-based generation scheme if a cache dir is ever shared.
-4. **`Site.Warm` does not set a `Host`**, so it cannot warm host-mode languages; `Prerender` and `WarmSitemap` do. Documented.
-5. **Pruning race.** A render that began before a flip can recreate its (pruned) version directory when it writes.
-   Harmless but leaks a directory until the next prune.
-6. **`hearth dev` runs Vite in watch mode itself** (one port, live reload, no HMR) unless `vite.devURL` is set, which keeps the proxy mode where you run `vite` in a second terminal. The per-request `Site` rebuild in
+3. **`Site.Warm` does not set a `Host`**, so it cannot warm host-mode languages. Use `Prerender` or `WarmSitemap`, which do.
+4. **Pruning race.** A render that began before a flip can recreate its (pruned) version directory when it writes.
+   Harmless; the directory is removed by the next prune.
+5. **`hearth dev` runs Vite in watch mode itself** (one port, live reload, no HMR) unless `vite.devURL` is set, which keeps the proxy mode where you run `vite` in a second terminal. The per-request `Site` rebuild in
    `mock` mode has not been measured on a large site.
-8. **Publish**: check the npm names, then the platform packages first and `hearth` last (`scripts/build-npm.mjs`).
-9. **Repository hygiene**: Splitting `pkg/hearth` into its own module can wait until a release cadence difference appears.
-10. **The brief.** Rules from the original brief were not available when the starter was written; reconcile them
-    with the starter's README rules.

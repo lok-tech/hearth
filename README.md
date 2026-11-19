@@ -94,6 +94,13 @@ Two settings are for sites that serve data from Go:
   your program, but `hearth build` fails on a page that calls one. Build those sites with `hearth.Build`
   (below).
 
+## Frontend rules
+
+- Shared CSS is one separate hashed file (every `{{entry}}` links it); never inline shared code into a page that gets cached.
+- Page-specific JS or CSS is its own entry in `vite.config.ts`, loaded only on that page with `{{entry "src/page.ts"}}` in the `head` block.
+- Tiny page-unique data goes in the HTML as JSON (`<script type="application/json">{{json .X}}</script>`), read by an entry script. No inline code.
+- Fonts: see the note at the top of the starter's `src/styles/main.css`.
+
 ## Images
 
 - `public/` is copied to the site root as is: no hashing, no processing. Files that scripts load at runtime
@@ -336,7 +343,7 @@ Verified here: the Go packages (`go test -race`), the Node packages, a real Vite
 npm wrapper, the parity between built files and a server, and the example's HTTP-level tests.
 
 Not verified: a run against real Postgres, Docker builds and compose runs, live Caddy and nginx (use
-`deploy/verify.sh`), `hearth dev` over real TCP with Vite's HMR socket, and publishing to npm. The
+`deploy/verify.sh`) and `hearth dev` over real TCP with Vite's HMR socket. The
 sandbox this was built in blocks Docker and local ports. Multi-width image encoding was tested with a fake
 encoder, not real sharp, and browsers' `srcset` selection was not observed.
 
