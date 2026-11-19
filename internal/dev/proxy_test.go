@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/orelhadad/hearth/internal/config"
-	"github.com/orelhadad/hearth/internal/testutil"
+	"github.com/lok-tech/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/testutil"
 )
 
 // These tests run in process: the backends are in-memory (fakeUpstream), no sockets are opened.

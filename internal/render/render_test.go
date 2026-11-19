@@ -6,9 +6,9 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/orelhadad/hearth/internal/i18n"
-	"github.com/orelhadad/hearth/internal/manifest"
-	"github.com/orelhadad/hearth/internal/route"
+	"github.com/lok-tech/hearth/internal/i18n"
+	"github.com/lok-tech/hearth/internal/manifest"
+	"github.com/lok-tech/hearth/internal/route"
 )
 
 func renderFS() fstest.MapFS {

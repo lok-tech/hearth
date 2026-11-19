@@ -15,9 +15,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/orelhadad/hearth/internal/config"
-	"github.com/orelhadad/hearth/internal/testutil"
-	"github.com/orelhadad/hearth/pkg/hearth"
+	"github.com/lok-tech/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/testutil"
+	"github.com/lok-tech/hearth/pkg/hearth"
 )
 
 // A page built by `hearth build` and the same page answered by a server running the built bundle

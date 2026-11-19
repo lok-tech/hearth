@@ -12,11 +12,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/orelhadad/hearth/internal/cache"
-	"github.com/orelhadad/hearth/internal/config"
-	"github.com/orelhadad/hearth/internal/mock"
-	"github.com/orelhadad/hearth/internal/route"
-	"github.com/orelhadad/hearth/pkg/hearth"
+	"github.com/lok-tech/hearth/internal/cache"
+	"github.com/lok-tech/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/mock"
+	"github.com/lok-tech/hearth/internal/route"
+	"github.com/lok-tech/hearth/pkg/hearth"
 )
 
 func parseProxyTarget(raw, what string) (*url.URL, error) {

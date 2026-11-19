@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/orelhadad/hearth/internal/testutil"
+	"github.com/lok-tech/hearth/internal/testutil"
 )
 
 type syncWriter struct {

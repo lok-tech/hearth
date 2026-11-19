@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-const mod = "github.com/orelhadad/hearth"
+const mod = "github.com/lok-tech/hearth"
 
 // importers returns, for every non-test Go file under root, the module-internal imports it makes
 // (as package directories relative to the module root, e.g. "internal/render"), keyed by the

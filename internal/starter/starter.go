@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/orelhadad/hearth/internal/fsutil"
+	"github.com/lok-tech/hearth/internal/fsutil"
 )
 
 //go:embed all:template

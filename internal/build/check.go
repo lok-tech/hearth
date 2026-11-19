@@ -12,11 +12,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/orelhadad/hearth/internal/config"
-	"github.com/orelhadad/hearth/internal/data"
-	"github.com/orelhadad/hearth/internal/i18n"
-	"github.com/orelhadad/hearth/internal/mock"
-	"github.com/orelhadad/hearth/internal/route"
+	"github.com/lok-tech/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/data"
+	"github.com/lok-tech/hearth/internal/i18n"
+	"github.com/lok-tech/hearth/internal/mock"
+	"github.com/lok-tech/hearth/internal/route"
 )
 
 // Check validates a site without running Vite or writing output: routes,

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/orelhadad/hearth/pkg/hearth"
+	"github.com/lok-tech/hearth/pkg/hearth"
 )
 
 // These are HTTP-level tests: real requests through the real Site and handler, a fake database

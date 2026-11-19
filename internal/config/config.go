@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/orelhadad/hearth/internal/cache"
+	"github.com/lok-tech/hearth/internal/cache"
 )
 
 // Config is hearth.config.json.

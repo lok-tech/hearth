@@ -12,10 +12,10 @@ import (
 	"sync"
 	"unicode"
 
-	"github.com/orelhadad/hearth/internal/data"
-	"github.com/orelhadad/hearth/internal/i18n"
-	"github.com/orelhadad/hearth/internal/manifest"
-	"github.com/orelhadad/hearth/internal/route"
+	"github.com/lok-tech/hearth/internal/data"
+	"github.com/lok-tech/hearth/internal/i18n"
+	"github.com/lok-tech/hearth/internal/manifest"
+	"github.com/lok-tech/hearth/internal/route"
 )
 
 // LayoutName is the shared layout template. It defines the blocks

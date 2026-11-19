@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"sort"
 
-	"github.com/orelhadad/hearth/internal/fsutil"
+	"github.com/lok-tech/hearth/internal/fsutil"
 )
 
 // Build writes the static site of s into outDir: every parameterless page that is not in the ssr

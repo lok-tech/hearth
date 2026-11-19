@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/orelhadad/hearth/internal/config"
-	"github.com/orelhadad/hearth/internal/manifest"
+	"github.com/lok-tech/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/manifest"
 
-	"github.com/orelhadad/hearth/internal/testutil"
+	"github.com/lok-tech/hearth/internal/testutil"
 )
 
 func TestBuildPrerendersStaticAndCollectionPages(t *testing.T) {

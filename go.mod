@@ -1,4 +1,4 @@
-module github.com/orelhadad/hearth
+module github.com/lok-tech/hearth
 
 go 1.27.3
 

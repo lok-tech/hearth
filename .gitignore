@@ -2,3 +2,4 @@ node_modules
 dist
 npm/platforms
 .DS_Store
+example/example

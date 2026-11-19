@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/orelhadad/hearth/internal/fsutil"
+	"github.com/lok-tech/hearth/internal/fsutil"
 )
 
 // PrerenderFailure is one page that did not render.

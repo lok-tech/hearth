@@ -46,8 +46,8 @@ request ──► web server ──► 1. dist/public/<path>             prebuil
   `build` subcommand that calls `hearth.Build(ctx, site, "dist/public")`, the same prerender, export and
   sitemap steps the CLI runs.
 
-Minimal Go server (`go get github.com/orelhadad/hearth`, then
-`import "github.com/orelhadad/hearth/pkg/hearth"`):
+Minimal Go server (`go get github.com/lok-tech/hearth`, then
+`import "github.com/lok-tech/hearth/pkg/hearth"`):
 
 ```go
 //go:embed all:templates          // dist/templates copied next to main.go at build time

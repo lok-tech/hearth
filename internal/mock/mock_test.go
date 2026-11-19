@@ -7,8 +7,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/orelhadad/hearth/internal/route"
-	"github.com/orelhadad/hearth/pkg/hearth"
+	"github.com/lok-tech/hearth/internal/route"
+	"github.com/lok-tech/hearth/pkg/hearth"
 )
 
 func TestHandlerShapes(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/orelhadad/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/config"
 )
 
 // withProxy sends requests under a dev.proxy prefix to its backend and everything else to next.

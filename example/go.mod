@@ -1,10 +1,10 @@
-module github.com/orelhadad/hearth/example
+module github.com/lok-tech/hearth/example
 
 go 1.27.3
 
 require (
 	github.com/jackc/pgx/v5 v5.13.0
-	github.com/orelhadad/hearth v0.0.0
+	github.com/lok-tech/hearth v0.0.0
 )
 
 require (
@@ -16,4 +16,4 @@ require (
 )
 
 // The example builds against this checkout. Delete the replace to use a published release.
-replace github.com/orelhadad/hearth => ../
+replace github.com/lok-tech/hearth => ../

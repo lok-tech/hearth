@@ -19,12 +19,12 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/orelhadad/hearth/internal/cache"
-	"github.com/orelhadad/hearth/internal/i18n"
-	"github.com/orelhadad/hearth/internal/manifest"
-	"github.com/orelhadad/hearth/internal/render"
-	"github.com/orelhadad/hearth/internal/route"
-	"github.com/orelhadad/hearth/internal/sitemap"
+	"github.com/lok-tech/hearth/internal/cache"
+	"github.com/lok-tech/hearth/internal/i18n"
+	"github.com/lok-tech/hearth/internal/manifest"
+	"github.com/lok-tech/hearth/internal/render"
+	"github.com/lok-tech/hearth/internal/route"
+	"github.com/lok-tech/hearth/internal/sitemap"
 )
 
 // Meta is returned by a handler next to its data.

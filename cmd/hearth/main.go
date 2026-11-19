@@ -15,10 +15,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/orelhadad/hearth/internal/build"
-	"github.com/orelhadad/hearth/internal/config"
-	"github.com/orelhadad/hearth/internal/dev"
-	"github.com/orelhadad/hearth/internal/starter"
+	"github.com/lok-tech/hearth/internal/build"
+	"github.com/lok-tech/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/dev"
+	"github.com/lok-tech/hearth/internal/starter"
 )
 
 const usage = `hearth: SEO and performance focused sites, one template location for static and SSR pages.

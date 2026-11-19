@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/orelhadad/hearth/internal/build"
-	"github.com/orelhadad/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/build"
+	"github.com/lok-tech/hearth/internal/config"
 )
 
 // NewWatch is `hearth dev` without a Vite dev server: it runs `vite build --watch` into a cache

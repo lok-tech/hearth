@@ -169,7 +169,7 @@ start with `VITE_`. The starter sets `envPrefix: ['VITE_', 'PUBLIC_']` in `vite.
 Requires Go 1.27 or newer.
 
 ```go
-import "github.com/orelhadad/hearth/pkg/hearth"
+import "github.com/lok-tech/hearth/pkg/hearth"
 
 site, err := hearth.New(hearth.Options{
 	Bundle:   os.DirFS("dist/templates"), // or an embed.FS

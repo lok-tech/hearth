@@ -17,7 +17,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // the database driver lives here, never in the library
 
-	"github.com/orelhadad/hearth/pkg/hearth"
+	"github.com/lok-tech/hearth/pkg/hearth"
 )
 
 func env(key, def string) string {

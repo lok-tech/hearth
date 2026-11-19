@@ -11,8 +11,8 @@ import (
 	"io/fs"
 	"net/http"
 
-	"github.com/orelhadad/hearth/internal/route"
-	"github.com/orelhadad/hearth/pkg/hearth"
+	"github.com/lok-tech/hearth/internal/route"
+	"github.com/lok-tech/hearth/pkg/hearth"
 )
 
 // ErrNeedsProgram is wrapped by the error a stub function returns when a page calls it.

@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/orelhadad/hearth/pkg/hearth"
+	"github.com/lok-tech/hearth/pkg/hearth"
 )
 
 // A slug is untrusted input: it comes straight from the URL. Reject anything that is not a plain

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/orelhadad/hearth/internal/config"
-	"github.com/orelhadad/hearth/internal/testutil"
+	"github.com/lok-tech/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/testutil"
 )
 
 // Stand-in for `vite build --watch`: args after the script are --watch --outDir <dir> ..., it

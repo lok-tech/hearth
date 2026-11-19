@@ -22,7 +22,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/orelhadad/hearth/pkg/hearth"
+	"github.com/lok-tech/hearth/pkg/hearth"
 )
 
 // --- guide: "Number formatting" and "trend" ------------------------------------------------

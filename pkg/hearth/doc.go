@@ -18,6 +18,6 @@
 // (Poll is a stdlib-only one). The package has no database driver; your server decides
 // what changes.
 //
-// Import it as github.com/orelhadad/hearth/pkg/hearth. The build, the CLI and everything
+// Import it as github.com/lok-tech/hearth/pkg/hearth. The build, the CLI and everything
 // else live under internal/ and cmd/hearth; this package is the only public Go API.
 package hearth

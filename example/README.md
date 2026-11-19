@@ -4,7 +4,7 @@ Posts live in Postgres. A post page is rendered from its row the first time it i
 disk as a plain file, and served from that file afterwards by Caddy. Change a row and the cache flips
 within seconds; the next visit renders it again.
 
-This is its own Go module and imports only the public package, `github.com/orelhadad/hearth/pkg/hearth`.
+This is its own Go module and imports only the public package, `github.com/lok-tech/hearth/pkg/hearth`.
 
 ## Run it
 

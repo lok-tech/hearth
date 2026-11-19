@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/orelhadad/hearth/internal/config"
-	"github.com/orelhadad/hearth/internal/testutil"
+	"github.com/lok-tech/hearth/internal/config"
+	"github.com/lok-tech/hearth/internal/testutil"
 )
 
 func TestCheckReportsAllProblems(t *testing.T) {
