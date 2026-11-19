@@ -26,7 +26,7 @@ of this page. See [DEPLOY.md](DEPLOY.md) for serving and the repository README f
 | hreflang and canonical | Both come from the one `pageData` function, so static and SSR pages carry the same tags. hreflang only for sites with more than one language and a `BaseURL`; canonical omitted without a `BaseURL` (a relative one is invalid). |
 | Cache | Path = sanitised URL path (`/x` -> `x/index.html`), versioned dirs + atomic relative `current` symlink, atomic writes through `.tmp-*`, only 200s cached. Host directory for subdomain/domain i18n, taken from configuration, never from the request. |
 | Cache versions | `<bundle build id>.<data version>`. A new bundle starts an empty cache (a redeploy never serves pages from old templates or old asset hashes); a restart with the same bundle keeps its cache. Old versions are pruned (`KeepVersions`, default 2). |
-| Invalidation | Event/subscribe API in the package (`SetVersion`, `Subscribe`, stdlib-only `Poll`). The server decides what triggers a change. No database driver in the library. All-or-nothing: a flip empties the whole cache. |
+| Invalidation | Event/subscribe API in the package (`SetVersion`, `Subscribe`, stdlib-only `Poll`). The server decides what triggers a change. No database driver in the library. `SetVersion` flips the whole cache; `Invalidate(paths...)` drops named pages (all languages) with a per-path generation check so an in-flight render cannot re-cache stale output. No tags yet. |
 | Go version | `go 1.27.3` in both modules (the library and the example), `golang:1.27-alpine` in the Dockerfiles. A low floor was considered and dropped: library users need Go 1.27 or newer. |
 | Dependencies | Library: stdlib + `golang.org/x/sync` (singleflight, semaphore). Nothing else. The example module adds `pgx`. |
 | One engine | `hearth build`, `check` and `dev` do not render pages themselves; they drive a `hearth.Site`. `build` = `Site.Prerender` + `Site.Export`. A test builds a site and requires every built file, `sitemap.xml` and `robots.txt` to equal what a separate server answers, byte for byte (prefix and subdomain modes). Another test fails if any package other than `pkg/hearth` imports the renderer. |
@@ -147,8 +147,9 @@ cache, `assetBase`, and subdomain/domain i18n in the runtime `Site`.
 
 Design limits (documented in the README):
 
-- **Invalidation is all-or-nothing.** `SetVersion` empties the whole cache; there is no per-page or per-tag
-  invalidation. Suits content that changes a few times an hour or less.
+- **Invalidation is by path, not by tag.** `SetVersion` empties the whole cache; `Invalidate` drops the pages you
+  name. Dependents (lists, sitemap entries) must be named too. One process per cache dir: the generation
+  counters are in memory, so replicas sharing a cache directory are not protected from the stale-write race.
 - **Handlers attach to `[param]` routes only.** A page without a parameter cannot get per-request data. Allowing it
   would need the build to skip prebuilding such pages, otherwise the prebuilt file shadows the handler.
 - No 404/410 templates yet (plain text bodies). No Markdown. One image size per format.
@@ -157,7 +158,7 @@ Open items, roughly in order of value:
 
 1. **Handlers see the whole request.** Reading cookies, `Authorization` or the query would cache personalised output.
    The README forbids it; stripping them from the request handed to handlers would make it impossible.
-2. **Per-page invalidation** (see limits).
+2. **Tag-based invalidation** (routes declare tags; `InvalidateTags`), and a file-based generation scheme if a cache dir is ever shared.
 3. **Static-route handlers** (see limits).
 4. **`Site.Warm` does not set a `Host`**, so it cannot warm host-mode languages; `Prerender` does. Document or fix.
 5. **Pruning race.** A render that began before a flip can recreate its (pruned) version directory when it writes.
@@ -166,7 +167,6 @@ Open items, roughly in order of value:
    `mock` mode has not been measured on a large site.
 7. **404/410 templates** and **responsive image widths** (`srcset`).
 8. **Publish**: check the npm names, then the platform packages first and `hearth` last (`scripts/build-npm.mjs`).
-9. **Repository hygiene**: the folder is not a git repo yet. Splitting `pkg/hearth` into its own module can wait
-    until a release cadence difference appears.
+9. **Repository hygiene**: Splitting `pkg/hearth` into its own module can wait until a release cadence difference appears.
 10. **The brief.** Rules from the original brief were not available when the starter was written; reconcile them
     with the starter's README rules.

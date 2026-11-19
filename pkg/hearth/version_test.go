@@ -3,9 +3,11 @@ package hearth
 import (
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -71,5 +73,46 @@ func TestOldVersionsArePruned(t *testing.T) {
 	}
 	if err := s.SetVersion("../x"); err == nil {
 		t.Fatal("bad version must fail")
+	}
+}
+
+// A render that read the old data and is still running when Invalidate fires must not leave its
+// output in the cache, and a request after the invalidation must not join it.
+func TestInvalidateMidRender(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int64
+	val := atomic.Value{}
+	val.Store("old")
+	s, err := New(Options{Bundle: siteBundle(), CacheDir: t.TempDir(), BaseURL: "https://x.test",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Handle("post/{id}", func(r *http.Request, p map[string]string) (any, Meta, error) {
+		n := calls.Add(1)
+		v := val.Load().(string)
+		if n == 1 {
+			close(started)
+			<-release
+		}
+		return v, Meta{}, nil
+	})
+	done := make(chan string)
+	go func() { done <- get(s, "/post/1").Body.String() }()
+	<-started
+	val.Store("new") // data first, then invalidate
+	if err := s.Invalidate("/post/1"); err != nil {
+		t.Fatal(err)
+	}
+	if b := get(s, "/post/1").Body.String(); !strings.Contains(b, "new") {
+		t.Fatalf("request after Invalidate saw %q", b)
+	}
+	close(release)
+	<-done
+	if b := get(s, "/post/1").Body.String(); !strings.Contains(b, "new") {
+		t.Fatalf("cache holds stale page: %q", b)
+	}
+	if s.Counters.StaleSkips.Load() != 1 {
+		t.Fatalf("StaleSkips = %d", s.Counters.StaleSkips.Load())
 	}
 }

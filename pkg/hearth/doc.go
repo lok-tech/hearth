@@ -13,7 +13,8 @@
 // (Prerender) and exports the files (Export); `hearth dev` runs a Site in Dev mode. A page
 // is the same whichever of them made it.
 //
-// Invalidation is event driven: call Site.SetVersion, or give Site.Subscribe a Source
+// Invalidation is event driven: call Site.SetVersion for a new version of everything, Site.Invalidate
+// to drop named pages (after your data change is committed), or give Site.Subscribe a Source
 // (Poll is a stdlib-only one). The package has no database driver; your server decides
 // what changes.
 //

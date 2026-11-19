@@ -78,3 +78,38 @@ func TestSetVersionRejectsTraversal(t *testing.T) {
 		}
 	}
 }
+
+func TestInvalidateBlocksLateStaleWrite(t *testing.T) {
+	c, _ := New(t.TempDir())
+	v, _ := c.Version()
+	gen, _ := c.Gen("", "/p")
+	// the render read old data; the data then changed and the page was invalidated (nothing cached yet)
+	if err := c.Invalidate("", "/p"); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := c.WriteGen(v, "", "/p", gen, []byte("stale"))
+	if err != nil || ok {
+		t.Fatalf("stale write: ok=%v err=%v", ok, err)
+	}
+	p, _ := c.Path("", "/p")
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatal("stale page was cached")
+	}
+	// a render that began after the invalidation is accepted
+	gen, _ = c.Gen("", "/p")
+	if ok, err := c.WriteGen(v, "", "/p", gen, []byte("fresh")); err != nil || !ok {
+		t.Fatalf("fresh write: ok=%v err=%v", ok, err)
+	}
+	// invalidating a cached page removes it; other pages stay
+	_ = c.Write(v, "", "/other", []byte("x"))
+	if err := c.Invalidate("", "/p"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatal("page not removed")
+	}
+	op, _ := c.Path("", "/other")
+	if _, err := os.Stat(op); err != nil {
+		t.Fatal("unrelated page was removed")
+	}
+}

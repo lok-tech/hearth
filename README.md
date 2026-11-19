@@ -156,9 +156,10 @@ things your responsibility.
 
 - **Pages that differ per user or per request:** dashboards, carts, anything behind a login, search results
   keyed by query string. The cache is per URL path.
-- **Data that changes constantly.** Invalidation is all-or-nothing: `SetVersion` empties the whole cache, and
-  there is no per-page invalidation yet. A site where rows change every few seconds would re-render
-  continuously. It suits content that changes a few times an hour or less.
+- **Data that changes constantly.** `SetVersion` empties the whole cache and `Site.Invalidate("/post/42")` drops
+  named pages, but there is no tag or dependency tracking: you name every affected page (lists, related
+  pages). A site where rows change every few seconds would re-render continuously. It suits content that
+  changes a few times an hour or less.
 - **Dynamic data on a page without a route parameter.** Handlers attach to `[param]` routes. A listing page
   such as `/posts` needs its own parameter (`/posts/{page}`) or to be built from local JSON.
 - **Content pipelines.** There is no Markdown, no CMS integration, and local data is JSON only.

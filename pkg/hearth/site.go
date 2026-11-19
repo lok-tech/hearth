@@ -91,7 +91,7 @@ type Options struct {
 
 // Counters are monotonic counters exposed for /healthz and metrics.
 type Counters struct {
-	Hits, Renders, Errors, NotFound, Redirects atomic.Int64
+	Hits, Renders, Errors, NotFound, Redirects, StaleSkips atomic.Int64
 }
 
 // Site is an http.Handler that serves cached pages and renders on a miss.
@@ -251,6 +251,33 @@ func (s *Site) SetVersion(v string) error {
 	return nil
 }
 
+// Invalidate drops cached pages by language-neutral path ("/post/42"), in every language, and
+// leaves the rest of the cache alone. Pages refill lazily on the next request.
+//
+// Call it after the data change is visible to your handlers (after the database commit). A
+// render already in flight when Invalidate runs is not cached, and new requests do not join it.
+// Use SetVersion for a bulk change; Invalidate is for known pages.
+func (s *Site) Invalidate(paths ...string) error {
+	var errs []error
+	ver, _ := s.cache.Version()
+	for _, p := range paths {
+		if !strings.HasPrefix(p, "/") {
+			errs = append(errs, fmt.Errorf("hearth: Invalidate %q: path must start with /", p))
+			continue
+		}
+		for _, lang := range s.urls.Langs {
+			host, _ := s.urls.Location(lang)
+			key := s.urls.Path(lang, p)
+			if err := s.cache.Invalidate(host, key); err != nil {
+				errs = append(errs, fmt.Errorf("hearth: Invalidate %q: %w", key, err))
+				continue
+			}
+			s.flight.Forget(ver + "|" + host + "|" + key)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Source reports external changes (the server decides what triggers one).
 type Source interface {
 	Watch(ctx context.Context, notify func(version string)) error
@@ -383,6 +410,8 @@ func (s *Site) render(r *http.Request, lang, urlPath, host, cacheKey, ver string
 	if !ok {
 		return &rendered{status: http.StatusNotFound, unmatched: true}, nil
 	}
+	// Before anything reads data: an Invalidate after this point makes the write below skip.
+	gen, _ := s.cache.Gen(host, cacheKey)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s.opt.RenderTimeout)
 	defer cancel()
 	if err := s.sem.Acquire(ctx, 1); err != nil {
@@ -422,8 +451,11 @@ func (s *Site) render(r *http.Request, lang, urlPath, host, cacheKey, ver string
 	s.Counters.Renders.Add(1)
 	// Only 200s reach this point; write under the version the render began with.
 	if !s.opt.Dev {
-		if err := s.cache.Write(ver, host, cacheKey, body); err != nil {
+		switch ok, err := s.cache.WriteGen(ver, host, cacheKey, gen, body); {
+		case err != nil:
 			s.log.Error("cache write", "path", cacheKey, "err", err)
+		case !ok:
+			s.Counters.StaleSkips.Add(1) // invalidated mid-render: serve it, do not keep it
 		}
 	}
 	return &rendered{body: body, status: http.StatusOK, noindex: meta.NoIndex, version: ver}, nil
