@@ -1,6 +1,8 @@
 package manifest
 
 import (
+	"fmt"
+	"html/template"
 	"strings"
 	"testing"
 )
@@ -16,7 +18,7 @@ func TestParseManifest(t *testing.T) {
 	if _, err := m.Asset("missing.js"); err == nil {
 		t.Fatal("unknown asset must fail")
 	}
-	pic, err := m.Picture("hero", `a "quote"`, true)
+	pic, err := m.Picture("hero", `a "quote"`, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,5 +145,210 @@ func TestParseEntries(t *testing.T) {
 	m, err := Parse([]byte(`{"format":3,"entries":{"a.ts":{"js":"/a.js","css":["/a.css"],"preload":[]}}}`))
 	if err != nil || m.Entries["a.ts"].JS != "/a.js" {
 		t.Fatalf("%v %v", m, err)
+	}
+}
+
+// legacyPicture is the Picture implementation from before responsive widths, kept as a reference so a
+// single-size bundle is proven byte-identical.
+func legacyPicture(files []ImageFile, alt string, lazy bool) string {
+	esc := template.HTMLEscapeString
+	var b strings.Builder
+	b.WriteString("<picture>")
+	last := files[len(files)-1]
+	for _, f := range files[:len(files)-1] {
+		fmt.Fprintf(&b, `<source type="%s" srcset="%s">`, esc(f.Type), esc(f.URL))
+	}
+	fmt.Fprintf(&b, `<img src="%s" alt="%s"`, esc(last.URL), esc(alt))
+	if last.Width > 0 && last.Height > 0 {
+		fmt.Fprintf(&b, ` width="%d" height="%d"`, last.Width, last.Height)
+	}
+	if lazy {
+		b.WriteString(` loading="lazy" decoding="async"`)
+	}
+	b.WriteString("></picture>")
+	return b.String()
+}
+
+func imgs() *Manifest {
+	return &Manifest{Format: BundleFormat, Images: map[string][]ImageFile{
+		"hero": {
+			{URL: "/i/h-480.avif", Type: "image/avif", Width: 480, Height: 270},
+			{URL: "/i/h-1600.avif", Type: "image/avif", Width: 1600, Height: 900},
+			{URL: "/i/h-480.webp", Type: "image/webp", Width: 480, Height: 270},
+			{URL: "/i/h-1600.webp", Type: "image/webp", Width: 1600, Height: 900},
+			{URL: "/i/h-480.jpg", Type: "image/jpeg", Width: 480, Height: 270},
+			{URL: "/i/h-1600.jpg", Type: "image/jpeg", Width: 1600, Height: 900},
+		},
+		"small": { // narrower than the smallest width: one size only
+			{URL: "/i/s.avif", Type: "image/avif", Width: 300, Height: 100},
+			{URL: "/i/s.jpg", Type: "image/jpeg", Width: 300, Height: 100},
+		},
+		"dark":  {{URL: "/i/d.webp", Type: "image/webp", Width: 40, Height: 40}, {URL: "/i/d.png", Type: "image/png", Width: 40, Height: 40}},
+		"light": {{URL: "/i/l.webp", Type: "image/webp", Width: 40, Height: 40}, {URL: "/i/l.png", Type: "image/png", Width: 40, Height: 40}},
+	}}
+}
+
+func TestPictureSingleWidthIsByteIdentical(t *testing.T) {
+	fixtures := [][]ImageFile{
+		{{URL: "/i/h.avif", Type: "image/avif"}, {URL: "/i/h.jpg", Type: "image/jpeg", Width: 800, Height: 600}},
+		{{URL: "/i/h.avif", Type: "image/avif", Width: 800, Height: 600}, {URL: "/i/h.webp", Type: "image/webp", Width: 800, Height: 600}, {URL: "/i/h.png", Type: "image/png", Width: 800, Height: 600}},
+		{{URL: `/i/a"b&c.jpg`, Type: "image/jpeg", Width: 5, Height: 5}},
+	}
+	for i, files := range fixtures {
+		m := &Manifest{Images: map[string][]ImageFile{"x": files}}
+		for _, lazy := range []bool{true, false} {
+			got, err := m.Picture("x", `a <"b">`, "", lazy)
+			if err != nil || string(got) != legacyPicture(files, `a <"b">`, lazy) {
+				t.Errorf("fixture %d lazy=%v:\n%s\nwant\n%s\n%v", i, lazy, got, legacyPicture(files, `a <"b">`, lazy), err)
+			}
+		}
+		// sizes is ignored when no srcset carries widths
+		got, _ := m.PictureArgs("x", "A", "50vw")
+		if want, _ := m.Picture("x", "A", "", true); got != want {
+			t.Errorf("fixture %d: sizes changed single-width output", i)
+		}
+	}
+}
+
+func TestPictureSeveralWidths(t *testing.T) {
+	got, err := imgs().PictureArgs("hero", "Alt")
+	want := `<picture><source type="image/avif" srcset="/i/h-480.avif 480w, /i/h-1600.avif 1600w" sizes="100vw">` +
+		`<source type="image/webp" srcset="/i/h-480.webp 480w, /i/h-1600.webp 1600w" sizes="100vw">` +
+		`<img src="/i/h-1600.jpg" srcset="/i/h-480.jpg 480w, /i/h-1600.jpg 1600w" sizes="100vw" alt="Alt" width="1600" height="900" loading="lazy" decoding="async"></picture>`
+	if err != nil || string(got) != want {
+		t.Fatalf("%s\n%v", got, err)
+	}
+	got, _ = imgs().PictureArgs("hero", "Alt", "(min-width: 60rem) 50vw, 100vw")
+	if strings.Count(string(got), `sizes="(min-width: 60rem) 50vw, 100vw"`) != 3 || strings.Contains(string(got), "100vw\" ") && strings.Contains(string(got), `sizes="100vw"`) {
+		t.Errorf("sizes: %s", got)
+	}
+	// widths given out of order are sorted
+	m := imgs()
+	h := m.Images["hero"]
+	h[0], h[1] = h[1], h[0]
+	got2, _ := m.PictureArgs("hero", "Alt")
+	if string(got2) != want {
+		t.Errorf("unsorted input changed output:\n%s", got2)
+	}
+}
+
+func TestPictureSmallSourceHasASingleSize(t *testing.T) {
+	got, err := imgs().PictureArgs("small", "s", "50vw")
+	want := `<picture><source type="image/avif" srcset="/i/s.avif"><img src="/i/s.jpg" alt="s" width="300" height="100" loading="lazy" decoding="async"></picture>`
+	if err != nil || string(got) != want {
+		t.Fatalf("%s %v", got, err)
+	}
+}
+
+func TestPictureEscapesSizesAndAlt(t *testing.T) {
+	got, _ := imgs().PictureArgs("hero", `x"y`, `a"><script>`)
+	if strings.Contains(string(got), `"><script>`) || strings.Contains(string(got), `x"y`) {
+		t.Errorf("unescaped: %s", got)
+	}
+}
+
+func TestPictureEagerAndArgCounts(t *testing.T) {
+	got, err := imgs().PictureArgs("small", "s", "eager")
+	if err != nil || strings.Contains(string(got), "loading=") || strings.Contains(string(got), "decoding=") {
+		t.Errorf("eager: %s %v", got, err)
+	}
+	got, err = imgs().PictureArgs("hero", "s", "50vw", "eager")
+	if err != nil || strings.Contains(string(got), "loading=") || !strings.Contains(string(got), `sizes="50vw"`) {
+		t.Errorf("sizes+eager: %s %v", got, err)
+	}
+	for _, args := range [][]string{{}, {"hero"}, {"hero", "a", "50vw", "x"}, {"hero", "a", "50vw", "eager", "eager"}, {"hero", "a", ""}, {"hero", "a", "", "eager"}} {
+		if _, err := imgs().PictureArgs(args...); err == nil {
+			t.Errorf("%q must fail", args)
+		}
+	}
+	if _, err := imgs().PictureArgs("nope", "a"); err == nil || !strings.Contains(err.Error(), `"nope"`) {
+		t.Errorf("missing image: %v", err)
+	}
+	l := imgs()
+	l.Lenient = true
+	if got, err := l.PictureArgs("nope", "a"); err != nil || !strings.Contains(string(got), `src="/nope"`) || strings.Contains(string(got), "<source") {
+		t.Errorf("lenient placeholder: %s %v", got, err)
+	}
+}
+
+func TestPictureSet(t *testing.T) {
+	got, err := imgs().PictureSetArgs("Logo", "", "(prefers-color-scheme: dark)", "dark", "", "light")
+	want := `<picture>` +
+		`<source media="(prefers-color-scheme: dark)" type="image/webp" srcset="/i/d.webp">` +
+		`<source media="(prefers-color-scheme: dark)" type="image/png" srcset="/i/d.png">` +
+		`<source type="image/webp" srcset="/i/l.webp">` +
+		`<img src="/i/l.png" alt="Logo" width="40" height="40" loading="lazy" decoding="async"></picture>`
+	if err != nil || string(got) != want {
+		t.Fatalf("%s\n%v", got, err)
+	}
+	got, _ = imgs().PictureSetArgs("L", "", "(a)", "dark", "", "light", "eager")
+	if strings.Contains(string(got), "loading=") || !strings.Contains(string(got), `media="(a)"`) {
+		t.Errorf("eager: %s", got)
+	}
+}
+
+func TestPictureSetWidthsAndSizes(t *testing.T) {
+	got, err := imgs().PictureSetArgs("Hero", "(min-width: 60rem) 50vw, 100vw", "(max-width: 40rem)", "hero", "", "hero")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if !strings.Contains(s, `<source media="(max-width: 40rem)" type="image/jpeg" srcset="/i/h-480.jpg 480w, /i/h-1600.jpg 1600w" sizes="(min-width: 60rem) 50vw, 100vw">`) ||
+		strings.Count(s, "<source") != 5 || !strings.Contains(s, `<img src="/i/h-1600.jpg" srcset=`) {
+		t.Errorf("%s", s)
+	}
+	got, _ = imgs().PictureSetArgs("Hero", "", "(m)", "hero", "", "hero")
+	if strings.Count(string(got), `sizes="100vw"`) != 6 {
+		t.Errorf("default sizes: %s", got)
+	}
+	// an image named "eager" as the fallback is a name, not the option
+	m := imgs()
+	m.Images["eager"] = m.Images["small"]
+	got, err = m.PictureSetArgs("A", "", "(m)", "small", "", "eager")
+	if err != nil || !strings.Contains(string(got), `loading="lazy"`) || !strings.Contains(string(got), "/i/s.jpg") {
+		t.Errorf("image named eager: %s %v", got, err)
+	}
+}
+
+func TestPictureSetErrorsAndMediaEscaping(t *testing.T) {
+	bad := map[string][]string{
+		"no args":         {},
+		"alt only":        {"a"},
+		"no pairs":        {"a", ""},
+		"no fallback":     {"a", "", "(m)", "dark"},
+		"odd":             {"a", "", "(m)", "dark", "", "light", "x"},
+		"missing name":    {"a", "", "(m)", "nope", "", "light"},
+		"missing fb":      {"a", "", "(m)", "dark", "", "nope"},
+		"quote in media":  {"a", "", `(m)" onload="x`, "dark", "", "light"},
+		"newline":         {"a", "", "(m)\n", "dark", "", "light"},
+		"tab":             {"a", "", "(m)\t", "dark", "", "light"},
+		"empty mid media": {"a", "", "", "dark", "", "light"},
+		"media on last":   {"a", "", "(m)", "dark", "(n)", "light"},
+	}
+	for n, args := range bad {
+		if _, err := imgs().PictureSetArgs(args...); err == nil {
+			t.Errorf("%s must fail", n)
+		}
+	}
+	got, err := imgs().PictureSetArgs("a", "", "(min-width: 1px) and (a<b) & x", "dark", "", "light")
+	if err != nil || !strings.Contains(string(got), `media="(min-width: 1px) and (a&lt;b) &amp; x"`) {
+		t.Errorf("media not escaped: %s %v", got, err)
+	}
+	// lenient: missing names become placeholders
+	l := imgs()
+	l.Lenient = true
+	if got, err := l.PictureSetArgs("a", "", "(m)", "nope", "", "nope2"); err != nil || !strings.Contains(string(got), `<source media="(m)" srcset="/nope">`) || !strings.Contains(string(got), `src="/nope2"`) {
+		t.Errorf("lenient: %s %v", got, err)
+	}
+	// still an error for bad media in lenient mode
+	if _, err := l.PictureSetArgs("a", "", "(m)\x00", "nope", "", "nope2"); err == nil {
+		t.Error("lenient must still validate media")
+	}
+}
+
+func TestSeveralRenditionsNeedWidths(t *testing.T) {
+	m := &Manifest{Images: map[string][]ImageFile{"x": {{URL: "/a.jpg", Type: "image/jpeg"}, {URL: "/b.jpg", Type: "image/jpeg"}}}}
+	if _, err := m.Picture("x", "a", "", true); err == nil {
+		t.Error("renditions without widths must fail")
 	}
 }

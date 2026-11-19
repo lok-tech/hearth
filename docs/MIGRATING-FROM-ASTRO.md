@@ -252,7 +252,7 @@ site, err := hearth.New(hearth.Options{
 he-IL groups thousands with a comma and uses a dot for decimals, the same as en-US, so no locale data is needed.
 Another locale means another separator, still a few lines of Go.
 
-Rules (enforced by `New`): a name may not shadow a helper (`t`, `plural`, `asset`, `entry`, `picture`, `json`,
+Rules (enforced by `New`): a name may not shadow a helper (`t`, `plural`, `asset`, `entry`, `picture`, `pictureSet`, `json`,
 `data`) or a Go template builtin; each value must be a func with one result, or a result and an `error`. An
 error fails the render (no partial page is cached). Functions must be pure and safe for concurrent use: no clock,
 no request, no shared mutable state, because the output is cached for everyone.
@@ -446,10 +446,26 @@ Set `Cache-Control` yourself; Hearth does not touch responses it does not render
   in the manifest, so templates and scripts reference them by plain path.
 - **`{{picture "name" "alt"}}` is for `src/images/**`** (brand logos, illustrations): the `hearth/vite` plugin turns
   each `.jpg`/`.png` into AVIF, WebP and the original, content-hashed, with `width` and `height` set.
-- **One size per format.** `maxWidth` (default 1600) caps it. `srcset` widths are **not supported**; responsive
-  widths are a future item ([PLAN.md](PLAN.md), open item 7). Logos do not need them.
-- **Art direction (a logo that changes in dark mode, a different hero on mobile) is hand-written.**
-  `{{picture}}` has no `media` attribute. Write the `<picture>` yourself and keep the files in `public/`:
+- **Responsive widths.** `hearthImages({ widths: [480, 960, 1600] })` writes every format at every width
+  (default `[maxWidth]`, one size, no change for existing sites). Widths are positive integers, at most 8, none above
+  `maxWidth`; a source narrower than a width is never enlarged. `{{picture "hero" "Alt" "(min-width: 60rem) 50vw, 100vw"}}`
+  then emits `srcset` with `w` descriptors per format plus `sizes`; without a `sizes` argument it emits `sizes="100vw"`.
+  Logos usually do not need widths. A trailing `"eager"` (`{{picture "hero" "Alt" "eager"}}`) drops `loading="lazy"`
+  and `decoding="async"` for the image above the fold.
+- **Art direction (a logo that changes in dark mode, a different hero on mobile) is `pictureSet`**, for images
+  in `src/images/` (JPEG and PNG; the plugin does not process SVG). The last pair is the fallback `<img>`:
+
+```html
+  {{pictureSet "Example" "" "(prefers-color-scheme: dark)" "brand/logo-dark" "" "brand/logo-light"}}
+```
+
+  This emits, per format, `<source media="(prefers-color-scheme: dark)" type=... srcset=...>` for the dark logo, then
+  the light logo's own format sources, then the `<img>` with `alt`, `width`, `height` (no layout shift). The first
+  `<source>` whose `media` matches wins, so list the most specific pair first. For a viewport change use
+  `"(max-width: 600px)"` with a cropped image, and add a `sizes` string. Every name must exist; `media` must not
+  contain a double quote. `prefers-color-scheme` follows the operating system; if your site has its own theme
+  switch, use two images toggled by CSS instead.
+- **Files in `public/` are not processed, so use hand-written markup for them** (for example SVG logos):
 
 ```html
   <picture>
@@ -458,16 +474,10 @@ Set `Cache-Control` yourself; Hearth does not touch responses it does not render
   </picture>
   ```
 
-  The files live in `public/brand/` and are served at `/brand/...`. The first `<source>` whose `media` matches wins,
-  so put the most specific one first; the `<img>` is the default and carries `alt`, `width` and `height` (which
-  reserve the space and avoid layout shift). For a viewport change use `media="(max-width: 600px)"` with a
-  smaller file. `prefers-color-scheme` follows the operating system; if your site has its own theme switch, use two
-  images toggled by CSS instead.
-
-  `public/` files are copied as is and not hashed: no automatic cache-busting, so rename a file
-  (`logo-light-v2.svg`) when its content changes. A hashed variant-set helper is a possible future item
-  ([PLAN.md](PLAN.md)), not implemented.
-- For the largest above-the-fold image write the `<img>` yourself with `fetchpriority="high"` and no lazy loading.
+  They are copied as is and not hashed: no automatic cache-busting, so rename a file (`logo-light-v2.svg`) when its
+  content changes.
+- For the largest above-the-fold image use the `"eager"` argument, or write the `<img>` yourself with
+  `fetchpriority="high"` and no lazy loading.
 
 ## 15b. Trailing slashes and cutover
 

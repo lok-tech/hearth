@@ -86,7 +86,7 @@ type Options struct {
 	// Fallback answers requests that match no page (for example the Vite dev server).
 	Fallback http.Handler
 
-	// Funcs adds template functions next to the built-in helpers (t, plural, asset, entry, picture,
+	// Funcs adds template functions next to the built-in helpers (t, plural, asset, entry, picture, pictureSet,
 	// json, data). A name may not shadow a helper or a Go template builtin, and each value must
 	// be a func with one result, or a result plus error; New reports violations. A returned
 	// error fails the render, so no partial page is ever cached.

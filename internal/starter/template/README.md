@@ -21,13 +21,16 @@ npm run build     # vite build + prerender -> dist/public, dist/templates, dist/
 | `src/` | `entry.ts`, CSS, `images/` |
 | `public/` | Copied as-is to the site root |
 
-Template helpers: `t`, `plural`, `asset`, `entry`, `picture`, `json` (for `<script type="application/json">` and `data-*` attributes), `data`. Use `{{.Link "/about"}}` for internal links so they stay in the current language (`/he/about` in Hebrew).
+Template helpers: `t`, `plural`, `asset`, `entry`, `picture`, `pictureSet`, `json` (for `<script type="application/json">` and `data-*` attributes), `data`. Use `{{.Link "/about"}}` for internal links so they stay in the current language (`/he/about` in Hebrew).
 
 ## Images
 
 Put `src/images/hero.jpg` (or `.png`) in place and use `{{picture "hero" "Describe the image"}}`. The build
 emits AVIF, WebP and the original format with `width` and `height` set (no layout shift) and `loading="lazy"`.
-For the image that is the largest paint above the fold, write the `<img>` yourself with `fetchpriority="high"` and no lazy loading.
+Pass `"eager"` last for the image above the fold (`{{picture "hero" "Alt" "eager"}}`): no lazy loading. For
+several sizes, set `widths: [480, 960, 1600]` in `hearthImages` in `vite.config.ts` and add a `sizes` string
+(`{{picture "hero" "Alt" "(min-width: 60rem) 50vw, 100vw"}}`; the default is `100vw`). `{{pictureSet}}` switches
+the image by media query (dark and light logos). Files in `public/` are not processed: write their markup by hand.
 
 ## Rules
 

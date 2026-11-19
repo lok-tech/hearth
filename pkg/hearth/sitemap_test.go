@@ -272,3 +272,36 @@ func TestEntryHelperInASite(t *testing.T) {
 		t.Errorf("dev: %s", body)
 	}
 }
+
+func TestPictureHelpersInASite(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bundle := func(manifestJSON string) fstest.MapFS {
+		b := entryBundle(manifestJSON)
+		b["layouts/base.html"] = &fstest.MapFile{Data: []byte(`{{picture "hero" "Hero" "50vw"}}{{pictureSet "Logo" "" "(prefers-color-scheme: dark)" "dark" "" "hero" "eager"}}`)}
+		return b
+	}
+	const mj = `{"format":3,"images":{"hero":[` +
+		`{"url":"/h1.avif","type":"image/avif","width":480,"height":3},{"url":"/h2.avif","type":"image/avif","width":960,"height":6},` +
+		`{"url":"/h1.jpg","type":"image/jpeg","width":480,"height":3},{"url":"/h2.jpg","type":"image/jpeg","width":960,"height":6}],` +
+		`"dark":[{"url":"/d.jpg","type":"image/jpeg","width":4,"height":4}]}}`
+	s, err := New(Options{Bundle: bundle(mj), CacheDir: t.TempDir(), Logger: logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := get(s, "/").Body.String()
+	for _, want := range []string{`srcset="/h1.avif 480w, /h2.avif 960w" sizes="50vw"`, `<source media="(prefers-color-scheme: dark)" type="image/jpeg" srcset="/d.jpg">`, `<img src="/h2.jpg" srcset="/h1.jpg 480w, /h2.jpg 960w" sizes="100vw" alt="Logo" width="960" height="6"></picture>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s in %s", want, body)
+		}
+	}
+	// a missing image fails the render (and is never cached)
+	s, _ = New(Options{Bundle: bundle(`{"format":3}`), CacheDir: t.TempDir(), Logger: logger})
+	if w := get(s, "/"); w.Code != 500 {
+		t.Errorf("missing image = %d, want 500", w.Code)
+	}
+	// lenient (hearth check): placeholders
+	s, _ = New(Options{Bundle: bundle(""), CacheDir: t.TempDir(), LenientAssets: true, Logger: logger})
+	if w := get(s, "/"); w.Code != 200 || !strings.Contains(w.Body.String(), `<img src="/hero" alt="Hero"`) {
+		t.Errorf("lenient: %d %s", w.Code, w.Body.String())
+	}
+}

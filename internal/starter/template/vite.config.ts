@@ -11,6 +11,7 @@ export default defineConfig({
   envPrefix: ["VITE_", "PUBLIC_"],
   plugins: [
     // Turns src/images/**/*.{jpg,png} into AVIF + WebP + fallback, used as {{picture "name"}}.
+    // Add widths: [480, 960, 1600] for responsive srcset (see README).
     hearthImages({ dir: "src/images", maxWidth: 1600 }),
   ],
   build: {

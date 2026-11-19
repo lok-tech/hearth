@@ -173,11 +173,17 @@ func (r *Renderer) builtinFuncs(lang string) template.FuncMap {
 			}
 			return r.manifest.Entry(name)
 		},
-		"picture": func(name, alt string) (template.HTML, error) {
+		"picture": func(args ...string) (template.HTML, error) {
 			if r.manifest == nil {
 				return "", fmt.Errorf("hearth: no manifest loaded")
 			}
-			return r.manifest.Picture(name, alt, true)
+			return r.manifest.PictureArgs(args...)
+		},
+		"pictureSet": func(args ...string) (template.HTML, error) {
+			if r.manifest == nil {
+				return "", fmt.Errorf("hearth: no manifest loaded")
+			}
+			return r.manifest.PictureSetArgs(args...)
 		},
 		"json": JSONForScript,
 		"data": func(name string) (any, error) {

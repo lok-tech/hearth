@@ -71,7 +71,7 @@ site/
   hearth.config.json
 ```
 
-Template helpers: `t`, `plural`, `asset`, `entry`, `picture`, `json` (safe for `<script type="application/json">` and for an attribute such as `data-x="{{json .X}}"`),
+Template helpers: `t`, `plural`, `asset`, `entry`, `picture`, `pictureSet`, `json` (safe for `<script type="application/json">` and for an attribute such as `data-x="{{json .X}}"`),
 `data`, and `.Link "/about"` for links that stay in the current language. A missing translation key
 fails the build.
 
@@ -99,11 +99,34 @@ Two settings are for sites that serve data from Go:
 - `public/` is copied to the site root as is: no hashing, no processing. Files that scripts load at runtime
   (candidate photos, say) pass through untouched and are referenced by plain path.
 - `{{picture "name" "alt"}}` is for `src/images/**` (logos, illustrations): AVIF + WebP + the original, hashed,
-  with `width` and `height`.
-- **Art direction is hand-written.** `{{picture}}` emits AVIF and WebP `<source>` elements plus a fallback `<img>`,
-  with no `media` attribute, so it cannot swap an image by `prefers-color-scheme` or viewport. For a logo or
-  hero that changes (a dark and a light logo, a cropped mobile hero), write the `<picture>` yourself and keep
-  the files in `public/`:
+  with `width` and `height`. It takes optional arguments: `{{picture "hero" "Alt" "(min-width: 60rem) 50vw, 100vw"}}`
+  adds a `sizes` string (never empty), and a trailing literal `"eager"` turns off `loading="lazy"` and
+  `decoding="async"` for the image above the fold (`{{picture "hero" "Alt" "eager"}}`, or with `sizes` before it).
+- **Responsive widths.** Set `widths` on the plugin: `hearthImages({ widths: [480, 960, 1600] })` (default
+  `[maxWidth]`, one size, so existing output does not change). Every format is written at every width, content-hashed.
+  `widths` must be positive integers, at most 8, none above `maxWidth` (an error, not a clamp); duplicates are
+  removed and the list is sorted. A source narrower than a width is never enlarged: it gets only its own size.
+  `picture` then emits `srcset="/a-480.avif 480w, /a-960.avif 960w"` per format, and the `<img>` fallback has the
+  largest original-format rendition as `src` (with its `width`/`height`) plus the same `srcset`. With several widths
+  and no `sizes` argument it emits `sizes="100vw"`, the browser's own default for a full-width image; pass `sizes`
+  whenever the image is narrower than the viewport, or the browser downloads more than it needs. A single-width
+  `srcset` is a bare URL and `sizes` is not emitted for it. `images.json` keeps its shape (one entry per file),
+  so older bundles render the same bytes.
+- **Art direction: `pictureSet`.** `{{pictureSet "Alt" "sizes" "(media)" "name" ... "" "fallback" ["eager"]}}` takes
+  the alt text, a `sizes` string (may be `""`), then `media`, `name` pairs; the last pair has an empty media and is
+  the fallback `<img>`. Each earlier pair becomes one `<source media type srcset>` per format (widths work inside
+  each), in the order written, so put the most specific media first. The fallback's own AVIF/WebP sources come
+  after them. Dark and light logos from `src/images/`:
+
+```html
+  {{pictureSet "Example" "" "(prefers-color-scheme: dark)" "brand/logo-dark" "" "brand/logo-light"}}
+  ```
+
+  Every name must exist (an error; `hearth check` uses placeholders). `media` is escaped and must not contain a
+  double quote or control characters. Any wrong argument count is an error. `prefers-color-scheme` follows the
+  operating system; if your site has its own theme switch, use two images toggled by CSS instead.
+- **Files in `public/` are not processed.** To use one, write the `<picture>` yourself; the files are copied as is,
+  **not hashed**, so give a changed image a new name (`logo-light-v2.svg`) because CDNs and browsers may keep the old bytes:
 
 ```html
   <picture>
@@ -111,19 +134,6 @@ Two settings are for sites that serve data from Go:
     <img src="/brand/logo-light.svg" alt="Example" width="160" height="40">
   </picture>
   ```
-
-  The files live in `public/brand/` and are served at `/brand/...`. The first `<source>` whose `media` matches wins,
-  so put the most specific one first; the `<img>` is the default and carries `alt`, `width` and `height` (which
-  reserve the space and avoid layout shift). For a viewport change use `media="(max-width: 600px)"` with a
-  smaller file. `prefers-color-scheme` follows the operating system; if your site has its own theme switch, use two
-  images toggled by CSS instead.
-
-  Files in `public/` are copied as is, **not hashed**, so there is no automatic cache-busting: when an image
-  changes, give it a new name (`logo-light-v2.svg`) rather than overwriting it, because CDNs and browsers may
-  keep the old bytes. A hashed variant-set helper is not implemented (open item in
-  [docs/PLAN.md](docs/PLAN.md)).
-- One size per format (`maxWidth`, default 1600). `srcset` widths are not supported yet; responsive widths are
-  an open item in [docs/PLAN.md](docs/PLAN.md).
 
 Coming from Astro? See **[docs/MIGRATING-FROM-ASTRO.md](docs/MIGRATING-FROM-ASTRO.md)** (voters.co.il as the worked example).
 
@@ -327,8 +337,8 @@ npm wrapper, the parity between built files and a server, and the example's HTTP
 
 Not verified: a run against real Postgres, Docker builds and compose runs, live Caddy and nginx (use
 `deploy/verify.sh`), `hearth dev` over real TCP with Vite's HMR socket, and publishing to npm. The
-sandbox this was built in blocks Docker and local ports. Images are emitted at one size per format (no
-`srcset` widths yet).
+sandbox this was built in blocks Docker and local ports. Multi-width image encoding was tested with a fake
+encoder, not real sharp, and browsers' `srcset` selection was not observed.
 
 ## Repository
 

@@ -32,7 +32,7 @@ Dependency direction: `cmd/hearth -> internal/{build,dev,starter,config} -> pkg/
 | `internal/render` | layout + templates + helpers, `PageData` | route, manifest, i18n, data |
 | `internal/route` | `pages/` file path to route, matching, `Page.MockFile` | none |
 | `internal/i18n` | catalogs, plurals, `IsRTL`, **`URLs`** (language to URL mapping) | none |
-| `internal/manifest` | `manifest.json`, asset and image lookup, `Picture` | none |
+| `internal/manifest` | `manifest.json`, asset and image lookup, `Picture`, `PictureSet` | none |
 | `internal/cache` | versioned dirs, atomic `current` symlink, `RelPath`, `ValidHost`, `ValidVersion` | none |
 | `internal/data` | read `data/*.json` safely | none |
 | `internal/fsutil` | `WriteFileAtomic` | none |
@@ -155,7 +155,7 @@ URL) and `Manifest.Lenient` (placeholder for unknown assets) are runtime-only (`
   file overrides them with `{{define}}`. All `partials/*.html` are parsed into every page's set. A page is parsed
   once per `(file, lang)` and cached; `about.he.html` replaces `about.html` for `he`.
 - `missingkey=error`: a missing data key or translation fails the render.
-- Helpers: `t`, `plural`, `asset`, `entry`, `picture(name, alt)`, `json`, `data`, plus `Options.Funcs`. `PageData.Link(path)` is a method.
+- Helpers: `t`, `plural`, `asset`, `entry`, `picture(name, alt [, sizes] [, "eager"])`, `pictureSet(alt, sizes, media, name, ..., "", fallback [, "eager"])`, `json`, `data`, plus `Options.Funcs`. `PageData.Link(path)` is a method.
 - `Options.Funcs` is validated in `render.New` (`checkFuncs`): no shadowing of a helper or Go builtin, valid name, a
   func with one result or result plus error. The CLI cannot run your Go code, so config `funcs` names become stubs
   (`internal/mock.Stubs`) that parse but fail when called; `Check` reports such pages with `build.NeedsProgram`.

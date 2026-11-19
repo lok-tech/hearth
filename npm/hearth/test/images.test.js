@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildImages, imageName } from "../lib/images.js";
+import { hearthImages } from "../vite.js";
+import { buildImages, imageName, normalizeWidths } from "../lib/images.js";
 
 const fakeEncoder = async (file) => [
   { ext: "avif", type: "image/avif", buffer: Buffer.from("avif:" + file), width: 800, height: 600 },
@@ -78,4 +79,73 @@ test("partial quality settings keep the other defaults", async () => {
   let seen;
   await buildImages({ ...s, quality: { avif: 40 }, encoder: async (f, o) => ((seen = o.quality), fakeEncoder(f)) });
   assert.deepEqual(seen, { avif: 40, webp: 78, jpeg: 80 });
+});
+
+// Honours the requested width but never upscales a source of `srcWidth` pixels, like sharp's withoutEnlargement.
+const sizedEncoder = (srcWidth) => async (file, { width }) => {
+  const w = Math.min(width, srcWidth);
+  return ["avif", "webp", "jpg"].map((ext) => ({
+    ext,
+    type: ext === "jpg" ? "image/jpeg" : `image/${ext}`,
+    buffer: Buffer.from(`${ext}:${file}:${w}`),
+    width: w,
+    height: w / 2,
+  }));
+};
+
+test("several widths write every format at every width, grouped by format", async () => {
+  const s = setup(["hero.jpg"]);
+  const m = await buildImages({ ...s, widths: [960, 480, 960], maxWidth: 1600, encoder: sizedEncoder(2000) });
+  assert.deepEqual(m.hero.map((f) => [f.type, f.width]), [
+    ["image/avif", 480], ["image/avif", 960],
+    ["image/webp", 480], ["image/webp", 960],
+    ["image/jpeg", 480], ["image/jpeg", 960],
+  ]);
+  assert.equal(new Set(m.hero.map((f) => f.url)).size, 6);
+  assert.equal(readdirSync(join(s.outDir, "assets", "img")).length, 6);
+  assert.deepEqual(JSON.parse(readFileSync(join(s.outDir, ".hearth", "images.json"), "utf8")), m);
+});
+
+test("a narrow source is never upscaled and gets only its own size", async () => {
+  const s = setup(["small.png", "wide.jpg"]);
+  const enc = (f, o) => sizedEncoder(f.endsWith("small.png") ? 700 : 2000)(f, o);
+  const m = await buildImages({ ...s, widths: [480, 960, 1600], encoder: enc });
+  assert.deepEqual(m.small.filter((f) => f.type === "image/avif").map((f) => f.width), [480, 700]);
+  assert.equal(m.wide.filter((f) => f.type === "image/jpeg").length, 3);
+  const tiny = setup(["t.jpg"]);
+  const mt = await buildImages({ ...tiny, widths: [480, 960], encoder: sizedEncoder(300) });
+  assert.deepEqual(mt.t.map((f) => f.width), [300, 300, 300]);
+  assert.equal(mt.t.length, 3);
+});
+
+test("the default is one width (maxWidth) and the encoder sees it", async () => {
+  const s = setup(["a.jpg"]);
+  const seen = [];
+  const m = await buildImages({ ...s, maxWidth: 1200, encoder: async (f, o) => (seen.push(o.maxWidth), fakeEncoder(f)) });
+  assert.deepEqual(seen, [1200]);
+  assert.equal(m.a.length, 3);
+});
+
+test("renditions hash by content and are stable across runs", async () => {
+  const s = setup(["a.jpg"]);
+  const m1 = await buildImages({ ...s, widths: [480, 960], encoder: sizedEncoder(2000) });
+  const m2 = await buildImages({ srcDir: s.srcDir, outDir: join(s.root, "out2"), widths: [960, 480], encoder: sizedEncoder(2000) });
+  assert.deepEqual(m1, m2);
+  const m3 = await buildImages({ srcDir: s.srcDir, outDir: join(s.root, "out3"), widths: [480, 961], encoder: sizedEncoder(2000) });
+  assert.equal(m1.a[0].url, m3.a[0].url); // the 480 rendition is unchanged
+  assert.notEqual(m1.a[1].url, m3.a[1].url);
+});
+
+test("widths validation", () => {
+  assert.deepEqual(normalizeWidths(undefined, 1600), [1600]);
+  assert.deepEqual(normalizeWidths([960, 480, 960, 1600], 1600), [480, 960, 1600]);
+  for (const bad of [[], "480", [0], [-5], [480.5], ["480"], [NaN], [1601], [null]]) {
+    assert.throws(() => normalizeWidths(bad, 1600), /hearth\/images/, JSON.stringify(bad));
+  }
+  assert.throws(() => normalizeWidths([1, 2, 3, 4, 5, 6, 7, 8, 9], 1600), /at most 8/);
+  assert.equal(normalizeWidths([1, 2, 3, 4, 5, 6, 7, 8, 8], 1600).length, 8);
+  // the plugin fails when it is configured, not at the end of a build
+  assert.throws(() => hearthImages({ widths: [0] }), /positive integers/);
+  assert.throws(() => hearthImages({ maxWidth: 800, widths: [480, 960] }), /above maxWidth/);
+  assert.equal(hearthImages({ widths: [480, 960] }).name, "hearth-images");
 });

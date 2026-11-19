@@ -1,11 +1,13 @@
 package render
 
 import (
+	"html/template"
 	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/orelhadad/hearth/internal/i18n"
+	"github.com/orelhadad/hearth/internal/manifest"
 	"github.com/orelhadad/hearth/internal/route"
 )
 
@@ -134,5 +136,56 @@ func TestRenderRobotsBlockAndStatus(t *testing.T) {
 	}
 	if _, err := render("d", PageData{Lang: "en"}); err == nil || !strings.Contains(err.Error(), "must produce") {
 		t.Errorf("d: %v", err)
+	}
+}
+
+func TestPictureHelpersInTemplates(t *testing.T) {
+	fsys := renderFS()
+	fsys["pages/pics.html"] = &fstest.MapFile{Data: []byte(`{{define "body"}}` +
+		`{{picture "hero" "A & B"}}|{{picture "hero" "x" "50vw" "eager"}}|` +
+		`{{pictureSet "Logo" "" "(prefers-color-scheme: dark)" "dark" "" "light"}}{{end}}`)}
+	fsys["pages/badpic.html"] = &fstest.MapFile{Data: []byte(`{{define "body"}}{{picture "hero"}}{{end}}`)}
+	routes, err := route.Discover(fsys, "pages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &manifest.Manifest{Format: manifest.BundleFormat, Images: map[string][]manifest.ImageFile{
+		"hero": {
+			{URL: "/h-1.avif", Type: "image/avif", Width: 480, Height: 3}, {URL: "/h-2.avif", Type: "image/avif", Width: 960, Height: 6},
+			{URL: "/h-1.jpg", Type: "image/jpeg", Width: 480, Height: 3}, {URL: "/h-2.jpg", Type: "image/jpeg", Width: 960, Height: 6},
+		},
+		"dark":  {{URL: "/d.webp", Type: "image/webp", Width: 4, Height: 4}, {URL: "/d.png", Type: "image/png", Width: 4, Height: 4}},
+		"light": {{URL: "/l.webp", Type: "image/webp", Width: 4, Height: 4}, {URL: "/l.png", Type: "image/png", Width: 4, Height: 4}},
+	}}
+	r, err := New(Options{FS: fsys, Routes: routes, Manifest: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pg, _ := routes.Lookup("pics")
+	out, err := r.Render(pg, PageData{Lang: "en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`<source type="image/avif" srcset="/h-1.avif 480w, /h-2.avif 960w" sizes="100vw">`,
+		`alt="A &amp; B" width="960" height="6" loading="lazy"`, // escaped once, not twice
+		`sizes="50vw" alt="x" width="960" height="6"></picture>`,
+		`<source media="(prefers-color-scheme: dark)" type="image/webp" srcset="/d.webp">`,
+		`<img src="/l.png" alt="Logo"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in %s", want, s)
+		}
+	}
+	if strings.Contains(s, "&amp;amp;") || strings.Contains(s, "&lt;picture") {
+		t.Errorf("double escaped: %s", s)
+	}
+	bad, _ := routes.Lookup("badpic")
+	if _, err := r.Render(bad, PageData{Lang: "en"}); err == nil {
+		t.Error("wrong argument count must fail the render")
+	}
+	if _, err := New(Options{FS: fsys, Routes: routes, Funcs: template.FuncMap{"pictureSet": func() string { return "" }}}); err == nil {
+		t.Error("pictureSet must be reserved")
 	}
 }

@@ -409,3 +409,165 @@ Dockerfile and Go version). The migration guide already shows the patterns Heart
    modes, and the README, migration guide and DEPLOY.md carry the notes and the container table.
 
 All unverified against a real Caddy, a real Vite build and a real site until one runs.
+
+---
+
+# Round 3: the remaining limits (2026-11-19)
+
+Scope: **Hearth only**, general features. These four were listed as "smaller limits" in PLAN.md and are
+now planned as features. Phases 1 to 4, 6, 7 and 9 are implemented; this round continues the numbering.
+
+| # | Feature | Kind | Phase |
+|---|---|---|---|
+| G16 | Responsive images: `srcset` widths and `sizes` | `hearth/vite` plugin, manifest, `picture` | 9 |
+| G17 | `pictureSet`: hashed, art-directed `<picture>` (`media` sources) | Helper | 9 |
+| G18 | Tag-based invalidation: `Meta.Tags`, `Site.InvalidateTags` | Cache + `Site` | 10 |
+| G19 | Several processes on one cache directory | Cache | 11 |
+
+Order matters: G18 and G19 both change `internal/cache`, so G18 lands first and G19 builds on its on-disk
+index. Images (Phase 9) are independent and go first because they touch different files.
+
+## Phase 9: images
+
+### G16. Responsive `srcset`
+
+**Today.** The plugin writes one size per format (`maxWidth`, default 1600). `images.json` is
+`name -> [{url, type, width, height}]` with the fallback last, and `picture` emits one `<source>` per
+non-fallback entry plus an `<img>`.
+
+**Design.**
+1. Plugin option `widths: [480, 960, 1600]` (default: `[maxWidth]`, so existing sites change nothing).
+   For each source image and each width **smaller than** the source's own width, write a rendition in every
+   format (AVIF, WebP, original format), content-hashed. Never upscale: a source narrower than a width
+   gets only its own size. `maxWidth` stays as the cap and stays valid on its own.
+2. `images.json` keeps its shape (one entry per file, each with `width`), so no bundle format bump is
+   needed. `Manifest.Picture` groups entries by `type`, in the existing order, and emits
+   `srcset="url1 480w, url2 960w, ..."` for each format when a type has more than one width, or the bare
+   URL when it has one (output for old single-size bundles is byte-identical to today).
+3. The `<img>` fallback: `src` is the largest original-format rendition, with its `width` and `height`
+   (layout shift protection) and the same `srcset`; `sizes` defaults to nothing.
+4. `picture` becomes variadic: `{{picture "hero" "Alt text"}}` and
+   `{{picture "hero" "Alt text" "(min-width: 60rem) 50vw, 100vw"}}`. A wrong argument count or an empty
+   `sizes` string is an error. When there are several widths and no `sizes`, emit `sizes="100vw"` (the
+   correct browser default), and say so in the docs.
+5. Lenient and dev modes behave as today (placeholder single file).
+6. Plugin tests use the existing fake encoder: rendition list, no upscaling, hash stability, `widths`
+   validation (positive integers, sorted, de-duplicated, at most 8).
+
+**Tests.** `Picture` output for 1 width (unchanged bytes), several widths, mixed (a small source),
+escaping of URLs, `sizes`, the argument-count errors; `check` passes with lenient mode.
+
+### G17. `pictureSet` (art direction)
+
+**Problem.** `picture` cannot switch image by `media` (dark and light logos, a cropped mobile hero). Writing
+the markup by hand over `public/` works, but the files are not hashed or optimised.
+
+**Design.**
+1. `{{pictureSet "Alt text" "sizes" "(prefers-color-scheme: dark)" "logo-dark" "" "logo-light"}}`:
+   alt, sizes (may be `""`), then pairs of `media`, `name`. The last pair has an empty media and is the
+   fallback `<img>`. Between them every pair becomes one set of `<source media=... type=... srcset=...>`
+   (one per format, using the G16 grouping), so formats and widths work inside each art direction.
+2. Every `name` must exist in the manifest (an error otherwise, `check` placeholders in lenient mode).
+   `media` is a plain string, escaped for the attribute, and must not contain `"` or control characters.
+3. The fallback `<img>` carries the width, height, `loading="lazy"` and `decoding="async"` of the fallback
+   image, as `picture` does. A way to turn lazy loading off for above-the-fold images is added to both
+   helpers as a trailing literal `"eager"` argument (this is also a common request; document it).
+4. No new plugin work: sets are built from images the plugin already produced.
+
+**Tests.** Dark/light pair output (order of sources, media escaping), widths inside a set, missing name,
+too few arguments, no fallback pair, `eager`.
+
+**Docs.** README Images section and the migration guide move the dark/light logo example from hand-written
+markup to `pictureSet`, keeping the hand-written form as the way to use `public/` files. PLAN.md: remove
+"responsive widths" and "pictureSet" from the open items.
+
+**Status (Phase 9): implemented** (G16, G17). Deviations from the design above, all small:
+- `widths` above `maxWidth` is an error (the plan allowed a clamp); duplicates are removed and the list sorted silently.
+- The no-upscaling rule is enforced in the plugin as well as in sharp: the encoder runs once per width (options now
+  carry `width`, `maxWidth` equals it) and a rendition with the same type and width as an earlier one is dropped.
+- `images.json` and the bundle format (3) are unchanged. `Manifest.Picture` now takes `(name, alt, sizes, lazy)`; the
+  variadic template arguments are parsed by `PictureArgs` and `PictureSetArgs`.
+- `sizes` is emitted only on a srcset that has `w` descriptors (so a one-width image renders exactly as before even
+  when a `sizes` argument is given). In `pictureSet` the `eager` option is told apart from an image named `eager` by
+  the parity of the pair list.
+- Art sources emit every format including the original, so a browser without AVIF/WebP still gets the art-directed
+  image. Docs, the skill and the starter README are updated. Unverified: real sharp encoding of several widths,
+  browsers' `srcset` selection.
+
+## Phase 10: tag-based invalidation (G18)
+
+**Problem.** Invalidation is by path. When one record changes, the app must name every page that shows it
+(its own page, lists, ranking pages), or flip the whole cache.
+
+**Design.**
+1. A handler declares tags with its data: `Meta.Tags []string` (for example `candidate:720`,
+   `candidates`). Tags are strings of letters, digits and `-_.:/`, at most 64 bytes, at most 32 tags per
+   page (more is an error that fails the render, not a silent drop). Pages without tags behave as today.
+2. `Site.InvalidateTags(tags ...string) error` drops every cached page carrying any of the tags, in every
+   language, using the existing per-path invalidation (so the generation check still stops an in-flight
+   render from putting stale output back). It returns the number of pages dropped via a small result type,
+   and joins errors as `Invalidate` does.
+3. **On-disk index, no memory growth.** When a render writes a tagged page, it also writes marker files
+   `<version>/.tags/<hash(tag)>/<hash(path-key)>` (the file content is the cache key). `InvalidateTags` lists
+   the tag directory, invalidates each key, then removes the markers. Dot directories are already ignored by
+   `Export` and by the web server configs. A version flip drops the index with the pages, and a restart
+   with the same bundle keeps both, so tags survive restarts (an in-memory map would not).
+4. Markers are written after the page file and only when the page write succeeded and was not skipped by
+   the generation check. A crash between the two leaves an untagged page, so the order is: write marker
+   first, then the page; a stray marker only causes an extra invalidation.
+5. Large lists tag coarsely. Document the pattern: `ssr` list pages carry `candidates` (and maybe a group
+   tag), detail pages carry `candidate:<id>`, and a change calls `InvalidateTags("candidate:720",
+   "candidates")`. A page cannot carry thousands of tags by design.
+6. `Source`/`Poll` stays version-based. A `TagSource` is not added; the app calls `InvalidateTags` itself
+   (document it next to `Subscribe`).
+7. `Prerender` and `Build` ignore tags (their handlers run at build time; the static output has no
+   server to invalidate).
+
+**Tests.** Tagged page dropped in all languages; untouched pages stay; tags survive a `Site` restart on the
+same cache dir; a flip empties the index; the in-flight render race (a render that began before
+`InvalidateTags` does not re-cache); tag validation and the 32 tag cap; marker cleanup; `-race`.
+
+## Phase 11: several processes on one cache directory (G19)
+
+**Problem.** The invalidation generation counters are in memory, so two processes sharing a cache directory
+are not protected from the stale-write race (a render in process B that began before process A's
+invalidation can write its stale page after it).
+
+**Design.**
+1. `Options.SharedCache bool` (default false, so single-process sites keep today's zero-cost path).
+2. **Generation tokens on disk.** Each stripe gets a file `<dir>/gen/<stripe>` holding a random token.
+   `Invalidate` writes a new token (atomic rename) **before** deleting the page. A render reads the token
+   before it reads data; after renaming its page into place it reads the token again, and if it changed it
+   deletes the file it just wrote. No cross-process locks (the library cannot use `x/sys`, and file locks
+   differ on Windows).
+3. Honest limit, written into the docs: between the rename and the compensating delete (microseconds) a
+   reader can still be served the stale page. The in-process path keeps its exact guarantee; the shared
+   path is "eventually consistent within milliseconds".
+4. `SetVersion` is already an atomic symlink flip, so replicas that each call it for the same version
+   converge. A replica with an older bundle writes under the version it started with, so it cannot pollute
+   the new version; it may read pages the new bundle rendered (additive assets, as decided in PLAN.md).
+   Document this for rolling deploys.
+5. Prune: keep today's behaviour; a render started before a flip may recreate a pruned directory (known,
+   harmless, listed under open items).
+6. The tag index (G18) is file-based, so `InvalidateTags` already works across replicas.
+7. Supported filesystems: a local disk or a shared volume with POSIX `rename` and `symlink`. NFS and EFS are
+   not tested and the docs say so.
+
+**Tests.** Two `Site` values on one directory in one process (the race, both orders); a test that spawns
+helper processes (`os/exec` of the test binary) running renders and invalidations concurrently, requiring
+that after all invalidations finished no page rendered from older data remains; token compare with a
+renamed-over file; `SharedCache` off is byte-for-byte unchanged behaviour.
+
+## Order and acceptance (round 3)
+
+1. **Phase 9** (G16, G17). Done when a plugin build with `widths` yields hashed renditions per format,
+   `{{picture}}` and `{{pictureSet}}` emit correct `srcset`/`media`, and a single-width bundle renders the
+   same bytes as before.
+2. **Phase 10** (G18). Done when `InvalidateTags` drops tagged pages in every language after a restart and
+   the in-flight race test passes.
+3. **Phase 11** (G19). Done when the two-process test passes with `SharedCache` on and docs state the
+   millisecond window.
+
+Update PLAN.md (decisions log, remove the matching limits and open item 2 (tags), keep
+"Still unverified" honest) and the hearth skill as each phase lands. Unverified until run: real sharp
+encoding of several widths, browsers' `srcset` selection, shared volumes other than a local disk.
