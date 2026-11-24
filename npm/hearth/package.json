@@ -1,6 +1,6 @@
 {
   "name": "@lok-tech/hearth",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Static and SSR pages from one template location, baked to files for static-speed serving.",
   "license": "MIT",
   "repository": {
@@ -46,12 +46,12 @@
     }
   },
   "optionalDependencies": {
-    "@lok-tech/cli-darwin-arm64": "0.1.0",
-    "@lok-tech/cli-darwin-x64": "0.1.0",
-    "@lok-tech/cli-linux-arm64": "0.1.0",
-    "@lok-tech/cli-linux-x64": "0.1.0",
-    "@lok-tech/cli-win32-arm64": "0.1.0",
-    "@lok-tech/cli-win32-x64": "0.1.0"
+    "@lok-tech/cli-darwin-arm64": "0.2.0",
+    "@lok-tech/cli-darwin-x64": "0.2.0",
+    "@lok-tech/cli-linux-arm64": "0.2.0",
+    "@lok-tech/cli-linux-x64": "0.2.0",
+    "@lok-tech/cli-win32-arm64": "0.2.0",
+    "@lok-tech/cli-win32-x64": "0.2.0"
   },
   "scripts": {
     "test": "node --test test/*.test.js"
