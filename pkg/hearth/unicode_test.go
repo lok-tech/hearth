@@ -31,7 +31,7 @@ func TestHebrewParameterCacheServerAndPrerender(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "letter א|ok-א") {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
-	file := filepath.Join(dir, "current", "letter", "א", "index.html")
+	file := filepath.Join(dir, "letter", "א", "index.html")
 	if c, err := os.ReadFile(file); err != nil || string(c) != w.Body.String() {
 		t.Fatalf("cache file %s: %v", file, err)
 	}

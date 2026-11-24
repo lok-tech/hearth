@@ -1,7 +1,7 @@
 // Package hearth serves Hearth sites from your own Go server.
 //
 // Static pages and server-rendered pages share one template location and one render
-// logic. A Site renders a page on first request, writes it to a versioned cache
+// logic. A Site renders a page on first request, writes it to the cache
 // directory as a plain file, and a web server in front serves every later request from
 // that file at static speed. See docs/DEPLOY.md for the web server side.
 //
@@ -13,10 +13,10 @@
 // (Prerender) and exports the files (Export); `hearth dev` runs a Site in Dev mode. A page
 // is the same whichever of them made it.
 //
-// Invalidation is event driven: call Site.SetVersion for a new version of everything, Site.Invalidate
-// to drop named pages (after your data change is committed), or give Site.Subscribe a Source
-// (Poll is a stdlib-only one). The package has no database driver; your server decides
-// what changes.
+// The cache is flat (<CacheDir>/<path>/index.html), with no versions: a deploy that replaces the
+// directory is the full invalidation, and Site.Invalidate drops named pages after your data change is
+// committed. Set Options.TmpDir to a directory on the same mount so temp files never appear in the
+// served tree. The package has no database driver; your server decides what changes.
 //
 // Import it as github.com/lok-tech/hearth/pkg/hearth. The build, the CLI and everything
 // else live under internal/ and cmd/hearth; this package is the only public Go API.

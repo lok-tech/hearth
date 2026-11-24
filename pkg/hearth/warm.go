@@ -107,19 +107,17 @@ func (s *Site) WarmPaths(ctx context.Context) ([]string, error) {
 
 // WarmSitemap renders every page the sitemap lists, in every language, through the same engine
 // a visitor's request uses (it is Prerender over the sitemap's merged path list: static pages,
-// `ssr` pages, SitemapURLs and SitemapEntries). Use it after SetVersion, which empties the whole
-// cache:
+// `ssr` pages, SitemapURLs and SitemapEntries). Use it at startup after a deploy emptied the
+// cache directory:
 //
-//	site.SetVersion("v43")
 //	go site.WarmSitemap(ctx, 4)
 //
 // Static and `ssr` pages are rendered first, then the listed pages, so a partial warm still covers
 // the pages that matter most. concurrency bounds parallel pages on top of Options.MaxConcurrent
 // and each render keeps Options.RenderTimeout. Cancelling ctx stops the run: pages not yet started
-// are reported as failures with the context's error. Each page is written under the cache
-// version that was active when its render began, so a SetVersion during the warm cannot put
-// stale pages into the new version. A large site costs real time and data source load; the
-// cache is already useful while the warm runs. An error from SitemapURLs/SitemapEntries is returned
+// are reported as failures with the context's error. A page invalidated while its render is
+// running is not cached, so an Invalidate during the warm cannot be undone by it. A large site costs real time and data source load;
+// the cache is already useful while the warm runs. An error from SitemapURLs/SitemapEntries is returned
 // with an empty report.
 func (s *Site) WarmSitemap(ctx context.Context, concurrency int) (PrerenderReport, error) {
 	var first, rest []string

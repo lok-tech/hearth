@@ -121,9 +121,9 @@ The npm names are `@lok-tech/hearth` and `@lok-tech/cli-<os>-<cpu>` (`hearth` an
 - Errors from the library start with `hearth:`; messages say what to do, not only what failed.
 - Paths from outside (URLs, data names, hosts, versions, image names) are validated at the boundary, and the
   validation has a test. Prefer rejecting over sanitising.
-- No dotfile is ever served or exported; temp files are `.tmp-*`.
+- No dotfile is ever served or exported; temp files are in `TmpDir`, or `.tmp-*` when it is not set.
 - Tests: table-driven where it helps, helpers in `internal/testutil`, `t.TempDir()` for files, no sleeps except
-  bounded polling in the `Subscribe` tests. Race detector on.
+  bounded polling in the example's `watchPosts` test. Race detector on.
 - Keep `docs/PLAN.md` honest: list what was verified and what was not, including what the sandbox prevented.
 
 ## Pitfalls already hit

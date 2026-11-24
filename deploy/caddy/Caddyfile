@@ -4,15 +4,16 @@
 # Env (all optional):
 #   SITE_ADDRESS   site address, default localhost (use example.com for automatic HTTPS)
 #   PUBLIC_ROOT    hearth build output, default /srv/public        (dist/public)
-#   CACHE_ROOT     the Go server's cache "current" link, default /srv/cache/current
+#   CACHE_ROOT     the Go server's cache directory (HEARTH_CACHE_DIR), default /srv/cache/public
 #   APP_UPSTREAM   the Go server, default app:8080
 {$SITE_ADDRESS:localhost} {
 	# One route block: directives run exactly in the order written.
 	route {
 		encode zstd gzip
 
-		# 1. Never serve dotfiles. The cache writes atomically through ".tmp-*" files that
-		#    must not be reachable while they are half written.
+		# 1. Never serve dotfiles. With HEARTH_TMP_DIR set the Go server keeps its temp files
+		#    outside the served tree; without it they are ".tmp-*" files next to the page and
+		#    must not be reachable while half written.
 		@dotfile path_regexp dotfile (^|/)\.
 		respond @dotfile 404
 
@@ -44,7 +45,7 @@
 		}
 
 		# 6. Then pages the Go server rendered and wrote earlier (read-only mount).
-		root * {$CACHE_ROOT:/srv/cache/current}
+		root * {$CACHE_ROOT:/srv/cache/public}
 		file_server {
 			canonical_uris false
 			pass_thru

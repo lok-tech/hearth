@@ -17,7 +17,7 @@ COPY --from=build /out/app /app
 COPY --from=build /src/example/site/dist/templates /bundle
 # A named volume mounted here inherits this ownership on first use, so the nonroot user can write.
 COPY --from=build --chown=65532:65532 /out/cache /var/cache/hearth
-ENV BUNDLE=/bundle CACHE_DIR=/var/cache/hearth ADDR=:8080
+ENV BUNDLE=/bundle CACHE_DIR=/var/cache/hearth/public TMP_DIR=/var/cache/hearth/tmp ADDR=:8080
 EXPOSE 8080
 ENTRYPOINT ["/app"]
 

@@ -49,13 +49,9 @@ func get(h http.Handler, path string, hdr ...string) *httptest.ResponseRecorder 
 	return w
 }
 
-// pagesOnDisk lists the files the cache holds for the active version.
-func pagesOnDisk(t *testing.T, dir string) []string {
+// pagesOnDisk lists the files the cache directory holds.
+func pagesOnDisk(t *testing.T, root string) []string {
 	t.Helper()
-	root, err := filepath.EvalSymlinks(filepath.Join(dir, "current"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var out []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
@@ -83,7 +79,7 @@ func TestRendersFromTheDatabaseAndWritesAFile(t *testing.T) {
 	if got := pagesOnDisk(t, dir); len(got) != 1 || got[0] != "post/hello-world/index.html" {
 		t.Fatalf("files on disk = %v", got)
 	}
-	onDisk, _ := os.ReadFile(filepath.Join(dir, "current", "post", "hello-world", "index.html"))
+	onDisk, _ := os.ReadFile(filepath.Join(dir, "post", "hello-world", "index.html"))
 	if string(onDisk) != body {
 		t.Error("the file on disk is not what was served")
 	}
@@ -95,7 +91,7 @@ func TestRendersFromTheDatabaseAndWritesAFile(t *testing.T) {
 func TestSecondRequestIsServedFromTheFileNotTheDatabase(t *testing.T) {
 	site, store, _ := newServer(t)
 	first := get(site, "/post/hello-world")
-	// even if the row changes underneath, the file wins until the version flips
+	// even if the row changes underneath, the file wins until the page is invalidated
 	store.Put(Post{Slug: "hello-world", Title: "Changed behind the cache's back", Body: "x"})
 	second := get(site, "/post/hello-world")
 	if second.Body.String() != first.Body.String() {
@@ -112,49 +108,34 @@ func TestSecondRequestIsServedFromTheFileNotTheDatabase(t *testing.T) {
 	}
 }
 
-func TestVersionBumpRefillsFromNewData(t *testing.T) {
+func TestInvalidateRefillsFromNewData(t *testing.T) {
 	site, store, dir := newServer(t)
 	get(site, "/post/hello-world")
 	get(site, "/post/static-speed")
-	before, _ := store.Version(context.Background())
 
 	store.Put(Post{Slug: "hello-world", Title: "Hello again", Body: "edited"})
-	after, _ := store.Version(context.Background())
-	if before == after {
-		t.Fatal("the version token must change when a post changes")
-	}
-	if err := site.SetVersion(after); err != nil {
+	if err := site.Invalidate("/post/hello-world"); err != nil {
 		t.Fatal(err)
 	}
-	if got := pagesOnDisk(t, dir); len(got) != 0 {
-		t.Fatalf("the flip should start an empty cache, found %v", got)
+	if got := pagesOnDisk(t, dir); len(got) != 1 || got[0] != "post/static-speed/index.html" {
+		t.Fatalf("only the invalidated page should go; on disk: %v", got)
 	}
 	if w := get(site, "/post/hello-world"); !strings.Contains(w.Body.String(), "<h1>Hello again</h1>") {
-		t.Errorf("stale page after the flip: %s", w.Body)
+		t.Errorf("stale page after Invalidate: %s", w.Body)
 	}
-	if got := pagesOnDisk(t, dir); len(got) != 1 {
-		t.Errorf("pages refill lazily, one per visit; on disk: %v", got)
+	if got := pagesOnDisk(t, dir); len(got) != 2 {
+		t.Errorf("the page refills lazily on the next visit; on disk: %v", got)
 	}
 }
 
-type notifier func(ctx context.Context, notify func(string)) error
-
-func (n notifier) Watch(ctx context.Context, notify func(string)) error { return n(ctx, notify) }
-
-func TestSubscribeFlipsTheCacheWhenTheSourceReportsAChange(t *testing.T) {
+func TestWatchPostsInvalidatesWhenTheVersionChanges(t *testing.T) {
 	site, store, _ := newServer(t)
 	get(site, "/post/hello-world")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	changed := make(chan struct{})
-	go site.Subscribe(ctx, notifier(func(ctx context.Context, notify func(string)) error {
-		<-changed
-		notify("v2")
-		<-ctx.Done()
-		return ctx.Err()
-	}))
+	go watchPosts(ctx, site, store, 5*time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // let it read the starting version
 	store.Put(Post{Slug: "hello-world", Title: "Pushed", Body: "x"})
-	close(changed)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if strings.Contains(get(site, "/post/hello-world").Body.String(), "<h1>Pushed</h1>") {
@@ -162,7 +143,15 @@ func TestSubscribeFlipsTheCacheWhenTheSourceReportsAChange(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("the page never refreshed after the source reported a change")
+	t.Fatal("the page never refreshed after the version changed")
+}
+
+func TestPostPathsCoverOldAndNewSlugs(t *testing.T) {
+	got := postPaths([]string{"b", "a"}, []string{"c", "a"})
+	want := []string{"/", "/post/a", "/post/b", "/post/c"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v, want %v", got, want)
+	}
 }
 
 func TestNotFoundWritesNothing(t *testing.T) {

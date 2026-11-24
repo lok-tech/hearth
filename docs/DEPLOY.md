@@ -18,7 +18,7 @@ Files referenced here live in `deploy/`:
 
 ```
 request ──► web server ──► 1. dist/public/<path>             prebuilt pages + hashed assets
-                       ├─► 2. <cache>/current/<path>         pages the Go server rendered earlier
+                       ├─► 2. <cache>/<path>                 pages the Go server rendered earlier
                        └─► 3. Go server (hearth.Site)        renders, writes file 2, answers
 ```
 
@@ -40,8 +40,8 @@ request ──► web server ──► 1. dist/public/<path>             prebuil
   Both the build and the server record a bundle format version; a mismatch fails at startup.
 - **Pages that list `ssr` in `hearth.config.json`** (for example `/candidates`) are not prerendered, so no file
   exists in `dist/public` and the request falls through to the Go server, which renders them with their handler
-  and caches the file. After the data changes, call `site.Invalidate("/candidates", "/")` (every language) or
-  `SetVersion` for everything. Call `site.Validate()` at startup: an `ssr` page without a handler answers 404.
+  and caches the file. After the data changes, call `site.Invalidate("/candidates", "/")` (every language).
+  Call `site.Validate()` at startup: an `ssr` page without a handler answers 404.
 - **Sites with custom `Funcs`** cannot be built by the CLI (it does not run your Go code). Give your binary a
   `build` subcommand that calls `hearth.Build(ctx, site, "dist/public")`, the same prerender, export and
   sitemap steps the CLI runs.
@@ -57,7 +57,8 @@ func main() {
 	sub, _ := fs.Sub(bundle, "templates")
 	site, err := hearth.New(hearth.Options{
 		Bundle:     sub,
-		CacheDir:   os.Getenv("HEARTH_CACHE_DIR"), // e.g. /var/cache/hearth, shared with the web server
+		CacheDir:   os.Getenv("HEARTH_CACHE_DIR"), // e.g. /var/www/mysite/public, shared with the web server
+		TmpDir:     os.Getenv("HEARTH_TMP_DIR"),   // e.g. /var/www/mysite/hearth-tmp, same mount, never served
 		BaseURL:    "https://example.com",
 		// I18n defaults to path prefixes (/he/...); set I18n{Mode: "subdomain", Hosts: ...} for hosts.
 	})
@@ -71,7 +72,7 @@ func main() {
 
 | | Needs | Does not need |
 |---|---|---|
-| **Web server** (Caddy, nginx, CDN) | `dist/public`: static pages, hashed `assets/`, `404.html`, `sitemap.xml` and `sitemap-N.xml`, `robots.txt`, and everything copied from `public/`. Plus the cache directory, **read-only**, at `<cache>/current` (SSR sites) | `dist/templates`, `dist/manifest.json` |
+| **Web server** (Caddy, nginx, CDN) | `dist/public`: static pages, hashed `assets/`, `404.html`, `sitemap.xml` and `sitemap-N.xml`, `robots.txt`, and everything copied from `public/`. Plus the cache directory, **read-only**, (SSR sites) | `dist/templates`, `dist/manifest.json` |
 | **Go container** (`hearth.Site`) | `dist/templates` (embedded or read from a path) and the cache directory, **read-write** | `dist/public`, `dist/manifest.json` |
 
 What the code says, so you do not have to guess:
@@ -109,26 +110,51 @@ path with a directory. Do not rely on server-specific tricks for it.
 ### The cache directory
 
 ```
-<cache>/current  ->  versions/<bundle>.<n>      relative symlink, flipped atomically
-<cache>/versions/<bundle>.<n>/post/42/index.html
-<cache>/versions/<bundle>.<n>/he.example.com/...   (only for subdomain/domain i18n)
+<cache>/post/42/index.html
+<cache>/he.example.com/...   (only for subdomain/domain i18n)
 ```
 
-- Mount it **read-only** into the web server and point the web server at `<cache>/current`.
-- Cache versions are `<bundle build id>.<data version>`. **A new bundle starts an empty cache**, so a
-  redeploy can never serve pages rendered by the old templates or with the old asset hashes. A restart
-  with the same bundle keeps its warm cache. `site.SetVersion("v42")` (or `Subscribe`) flips the data
-  version; pages refill lazily. Old versions are pruned (`Options.KeepVersions`, default 2).
-- The Go server writes with temp files named `.tmp-*` in the page's directory, then renames. They are
-  only complete after the rename, which is why the web server must never serve dotfiles (rule 2).
+The cache is flat: plain files, no versions, no symlink. There are two ways to lay it out.
+
+**One site directory, one deploy target** (what playground-server sets up):
+
+```
+/var/www/mysite/              one mount: rw in the Go container, ro in the web server
+  public/                     rsync --delete target = web root = HEARTH_CACHE_DIR
+  hearth-tmp/                 HEARTH_TMP_DIR: temp files, never served, never touched by rsync
+```
+
+The prebuilt files and the rendered pages live in the same tree. A deploy is
+`rsync -a --delete dist/public/ /var/www/mysite/public/` (trailing slashes, and never the parent, or
+`--delete` removes `hearth-tmp/`): it replaces the prebuilt files and drops every cached page in one step,
+so **a deploy is the full invalidation**. Deploy the Go server first, then the files. Between the two, the
+new server can cache a page that names an asset the sync has not copied yet; the sync then deletes that
+page (it is not in `dist/public`) and it renders again, so the window is short and self-healing.
+`--keep-cache` style deploys (no `--delete`) keep every cached page and every old prebuilt file: use them
+only when the templates and asset hashes did not change.
+
+**Separate directories**: the web server tries `dist/public`, then `<cache>`, then the Go server (the
+reference Caddy and nginx configs). Mount `<cache>` read-only into the web server.
+
+- `Site.Invalidate("/post/42")` drops that page in every language; it is the only invalidation the Go
+  server does. It removes `<path>/index.html` only, so a prerendered page that is invalidated is simply
+  rendered again from current data, and `404.html`, `sitemap.xml` and `assets/` can never be hit.
+- **`HEARTH_TMP_DIR`**: the Go server writes each page to a temp file there and renames it into the cache.
+  `rename` cannot cross mounts, so the directory must be inside the same mount as the cache (one volume,
+  not two bind mounts). `New` checks this at startup with a probe rename and refuses to start otherwise,
+  and removes temp files older than ten minutes left by a crash. Without it, temp files are `.tmp-*`
+  dotfiles in the page's directory, which is why the web server must never serve dotfiles (rule 2).
+- **Ownership**: the Go server creates directories and files as its own user, and `rsync --delete` has to
+  remove them later. Run rsync as the same user as the Go server (or as root, or share a group with
+  group-writable directories), or the sync fails on a directory the server created.
 
 ## 2. The serving contract
 
 Whatever server you use, it must do these seven things. `deploy/verify.sh` tests them.
 
 1. **Files first, then the Go server.** Try `<path>` and `<path>/index.html` in `dist/public`, then in
-   `<cache>/current`, then proxy. The query string never picks a file (the cache key is the path).
-2. **Never serve dotfiles.** Hides the `.tmp-*` files, `.git`, `.env`.
+   `<cache>`, then proxy. The query string never picks a file (the cache key is the path).
+2. **Never serve dotfiles.** Hides `.tmp-*` files (when `HEARTH_TMP_DIR` is not set), `.git`, `.env`.
 3. **One URL per page.** `/x/` redirects (301) to `/x`, `/x/index.html` to `/x`, `/index.html` to `/`.
    Otherwise the same page exists at three URLs and the canonical tag disagrees with the server. Details
    and a migration checklist: [Trailing slashes](#trailing-slashes-and-the-cutover-checklist).
@@ -136,7 +162,7 @@ Whatever server you use, it must do these seven things. `deploy/verify.sh` tests
    default `Options.CacheControl`, so file hits and renders behave alike). `/assets/*`:
    `public, max-age=31536000, immutable`; they are content-hashed.
 5. **Compress** HTML, CSS, JS, JSON, SVG.
-6. **`/healthz` is internal.** It reports version and counters. Allow private ranges only.
+6. **`/healthz` is internal.** It reports counters. Allow private ranges only.
 7. **Mount the cache read-only** and run the Go server as a non-root user that owns it.
 
 ### Trailing slashes and the cutover checklist
@@ -178,7 +204,7 @@ Known differences between servers:
 - Caddy attaches its HTML `Cache-Control` before proxying; the Go server's own headers win on proxied
   responses, but a proxied 404 can carry `max-age=0, must-revalidate` (harmless: it revalidates).
 - nginx `add_header` is not inherited between locations, which is why the header appears in both `/` and `@cache`.
-- Subdomain/domain i18n: one server block per host with an explicit `root .../current/<host>`. Never build the
+- Subdomain/domain i18n: one server block per host with an explicit `root .../<cache>/<host>`. Never build the
   directory from the `Host` header.
 
 ## 3. Assets on S3 or a CDN
@@ -248,7 +274,7 @@ For SSR on top of S3, use an origin group: S3 first, the web server as failover 
 for a missing key when the role lacks `s3:ListBucket`). This is the same "file, else server" rule as step 1.
 HTML on a CDN: keep `max-age=0, must-revalidate` (it revalidates via ETag), or set
 `Options.CacheControl` to something like `public, max-age=0, s-maxage=60, stale-while-revalidate=300` and
-invalidate `/*` on each release or `SetVersion`. Keep the web server's header in step with that option.
+invalidate `/*` on each release. Keep the web server's header in step with that option.
 
 ## 4. Releases and rollback
 
@@ -256,12 +282,13 @@ Order matters because assets are additive and pages are not:
 
 1. `hearth build` (runs Vite, prerenders, writes `dist/`).
 2. **Upload assets first** (S3/CDN, or the web server's `public/assets`). Old files stay.
-3. Roll out the Go server with the new `dist/templates`. On start it sees a new bundle id and begins an empty cache.
-4. Roll out `dist/public` (prebuilt pages) to the web server, or sync it to S3.
+3. Roll out the Go server with the new `dist/templates`.
+4. Roll out `dist/public` (prebuilt pages) to the web server, or sync it to S3. If the cache directory is the
+   web root, the `rsync --delete` is what empties the cache; otherwise empty the cache directory in this step.
 5. Invalidate the CDN's HTML (`/*`) if it caches HTML.
 
-Rollback: redeploy the previous bundle. Its assets are still there (step 2 never deleted them), and its
-cache version directory may still be on disk if it is within `KeepVersions`.
+Rollback: redeploy the previous bundle and its `dist/public`. Its assets are still there (step 2 never
+deleted them) and the cache starts empty again.
 
 With the compose example both images come from one build and are replaced together; there is a window of a few
 seconds between the two containers. To remove it, publish assets to S3/CDN (shape A or B), or copy the previous

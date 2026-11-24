@@ -63,8 +63,16 @@ type I18n struct {
 
 // Options configures a Site.
 type Options struct {
-	Bundle      fs.FS // dist/templates (embed.FS sub or os.DirFS)
-	CacheDir    string
+	Bundle fs.FS // dist/templates (embed.FS sub or os.DirFS)
+	// CacheDir is where rendered pages are written as plain files (<CacheDir>/<path>/index.html),
+	// the directory the web server serves. It is flat: no versions. A deploy that replaces the
+	// directory is the full invalidation; Invalidate drops single pages.
+	CacheDir string
+	// TmpDir is where a page is written before it is renamed into CacheDir, so no temp file is
+	// ever visible in the served tree. It must be on the same mount as CacheDir and must not be
+	// inside the directory a deploy replaces. Empty: temp files are ".tmp-*" dotfiles next to the
+	// page, which the web server must never serve.
+	TmpDir      string
 	BaseURL     string // https://example.com, no trailing slash; used for canonical, hreflang, sitemap
 	DefaultLang string // default "en"
 	I18n        I18n
@@ -72,7 +80,6 @@ type Options struct {
 	MaxConcurrent int           // concurrent renders; default 8
 	RenderTimeout time.Duration // default 10s
 	CacheControl  string        // default "public, max-age=0, must-revalidate" ("no-store" in Dev)
-	KeepVersions  int           // old cache versions kept on disk after a flip; default 2
 	Logger        *slog.Logger
 
 	// Dev never reads or writes the cache, and manifest.json may be missing.
@@ -170,7 +177,6 @@ type Site struct {
 	urls       i18n.URLs
 	handlers   map[string]Handler
 	ssr        map[string]bool           // parameterless page patterns served by handlers
-	bundleVer  string                    // manifest build id; cache versions are "<bundleVer>.<data version>"
 	sitemapMax struct{ urls, bytes int } // zero: the protocol's limits (50,000 URLs, 50 MB); tests lower them
 	flight     singleflight.Group
 	sem        *semaphore.Weighted
@@ -191,9 +197,6 @@ func New(o Options) (*Site, error) {
 	}
 	if o.RenderTimeout <= 0 {
 		o.RenderTimeout = 10 * time.Second
-	}
-	if o.KeepVersions <= 0 {
-		o.KeepVersions = 2
 	}
 	if o.CacheControl == "" {
 		o.CacheControl = "public, max-age=0, must-revalidate"
@@ -261,24 +264,12 @@ func New(o Options) (*Site, error) {
 	if err != nil {
 		return nil, err
 	}
-	pageCache, err := cache.New(o.CacheDir)
+	pageCache, err := cache.New(o.CacheDir, o.TmpDir)
 	if err != nil {
 		return nil, err
 	}
-	bundleVer := man.Version
-	if !cache.ValidVersion(bundleVer) {
-		bundleVer = "dev"
-	}
-	// A new bundle (new templates, new asset hashes) must never be served pages rendered by
-	// the old one. A restart with the same bundle keeps its warm cache.
-	if cur, err := pageCache.Version(); err != nil || !strings.HasPrefix(cur, bundleVer+".") {
-		if err := pageCache.SetVersion(bundleVer + ".0"); err != nil {
-			return nil, err
-		}
-		_ = pageCache.Prune(o.KeepVersions)
-	}
 	return &Site{opt: o, routes: routes, renderer: rend, cache: pageCache, urls: urls, handlers: map[string]Handler{}, ssr: ssr,
-		bundleVer: bundleVer, sem: semaphore.NewWeighted(int64(o.MaxConcurrent)), log: o.Logger}, nil
+		sem: semaphore.NewWeighted(int64(o.MaxConcurrent)), log: o.Logger}, nil
 }
 
 func newURLs(o Options, langs []string) (i18n.URLs, error) {
@@ -338,30 +329,14 @@ func (s *Site) MustHandle(pattern string, h Handler) {
 	}
 }
 
-// SetVersion invalidates the cache: flips to version v; pages refill lazily.
-func (s *Site) SetVersion(v string) error {
-	if !cache.ValidVersion(v) {
-		return fmt.Errorf("hearth: invalid version %q", v)
-	}
-	if err := s.cache.SetVersion(s.bundleVer + "." + v); err != nil {
-		return err
-	}
-	if err := s.cache.Prune(s.opt.KeepVersions); err != nil {
-		s.log.Warn("prune old cache versions", "err", err)
-	}
-	s.log.Info("cache version set", "version", v, "bundle", s.bundleVer)
-	return nil
-}
-
 // Invalidate drops cached pages by language-neutral path ("/post/42"), in every language, and
 // leaves the rest of the cache alone. Pages refill lazily on the next request.
 //
 // Call it after the data change is visible to your handlers (after the database commit). A
 // render already in flight when Invalidate runs is not cached, and new requests do not join it.
-// Use SetVersion for a bulk change; Invalidate is for known pages.
+// A full invalidation is a deploy that replaces CacheDir; Invalidate is for known pages.
 func (s *Site) Invalidate(paths ...string) error {
 	var errs []error
-	ver, _ := s.cache.Version()
 	for _, p := range paths {
 		if !strings.HasPrefix(p, "/") {
 			errs = append(errs, fmt.Errorf("hearth: Invalidate %q: path must start with /", p))
@@ -374,53 +349,10 @@ func (s *Site) Invalidate(paths ...string) error {
 				errs = append(errs, fmt.Errorf("hearth: Invalidate %q: %w", key, err))
 				continue
 			}
-			s.flight.Forget(ver + "|" + host + "|" + key)
+			s.flight.Forget(host + "|" + key)
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// Source reports external changes (the server decides what triggers one).
-type Source interface {
-	Watch(ctx context.Context, notify func(version string)) error
-}
-
-// Subscribe runs src.Watch until ctx ends, flipping the version on each notification.
-func (s *Site) Subscribe(ctx context.Context, src Source) error {
-	return src.Watch(ctx, func(v string) {
-		if err := s.SetVersion(v); err != nil {
-			s.log.Error("set version", "err", err)
-		}
-	})
-}
-
-type pollSource struct {
-	fn       func(ctx context.Context) (string, error)
-	interval time.Duration
-}
-
-// Poll is a stdlib-only Source: it calls fn every interval and notifies when the string changes.
-func Poll(fn func(ctx context.Context) (string, error), interval time.Duration) Source {
-	return &pollSource{fn: fn, interval: interval}
-}
-
-func (p *pollSource) Watch(ctx context.Context, notify func(string)) error {
-	var last string
-	t := time.NewTicker(p.interval)
-	defer t.Stop()
-	for {
-		if v, err := p.fn(ctx); err == nil && v != last {
-			if last != "" {
-				notify(v)
-			}
-			last = v
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-t.C:
-		}
-	}
 }
 
 type rendered struct {
@@ -430,7 +362,6 @@ type rendered struct {
 	noindex   bool
 	note      string // why a 404 happened, shown in Dev
 	unmatched bool   // no page matched the request (Options.Fallback gets those)
-	version   string
 }
 
 func (s *Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -551,16 +482,15 @@ func (s *Site) resolve(r *http.Request) (*rendered, error) {
 			}
 		}
 	}
-	ver, _ := s.cache.Version()
-	key := ver + "|" + host + "|" + cacheKey
-	v, err, _ := s.flight.Do(key, func() (any, error) { return s.render(r, lang, urlPath, host, cacheKey, ver) })
+	key := host + "|" + cacheKey
+	v, err, _ := s.flight.Do(key, func() (any, error) { return s.render(r, lang, urlPath, host, cacheKey) })
 	if err != nil {
 		return nil, err
 	}
 	return v.(*rendered), nil
 }
 
-func (s *Site) render(r *http.Request, lang, urlPath, host, cacheKey, ver string) (*rendered, error) {
+func (s *Site) render(r *http.Request, lang, urlPath, host, cacheKey string) (*rendered, error) {
 	pg, params, ok := s.routes.Match(urlPath)
 	if !ok {
 		return &rendered{status: http.StatusNotFound, unmatched: true}, nil
@@ -603,16 +533,16 @@ func (s *Site) render(r *http.Request, lang, urlPath, host, cacheKey, ver string
 		return nil, err
 	}
 	s.Counters.Renders.Add(1)
-	// Only 200s reach this point; write under the version the render began with.
+	// Only 200s reach this point.
 	if !s.opt.Dev {
-		switch ok, err := s.cache.WriteGen(ver, host, cacheKey, gen, body); {
+		switch ok, err := s.cache.WriteGen(host, cacheKey, gen, body); {
 		case err != nil:
 			s.log.Error("cache write", "path", cacheKey, "err", err)
 		case !ok:
 			s.Counters.StaleSkips.Add(1) // invalidated mid-render: serve it, do not keep it
 		}
 	}
-	return &rendered{body: body, status: http.StatusOK, noindex: meta.NoIndex, version: ver}, nil
+	return &rendered{body: body, status: http.StatusOK, noindex: meta.NoIndex}, nil
 }
 
 // pageData is the single place that decides what a template sees about its language and address.
@@ -651,10 +581,9 @@ func (s *Site) write(w http.ResponseWriter, r *http.Request, status int, body []
 }
 
 func (s *Site) healthz(w http.ResponseWriter) {
-	v, _ := s.cache.Version()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	fmt.Fprintf(w, "ok\nversion %s\nhits %d\nrenders %d\nerrors %d\nnotfound %d\nredirects %d\n", v,
+	fmt.Fprintf(w, "ok\nhits %d\nrenders %d\nerrors %d\nnotfound %d\nredirects %d\n",
 		s.Counters.Hits.Load(), s.Counters.Renders.Load(), s.Counters.Errors.Load(),
 		s.Counters.NotFound.Load(), s.Counters.Redirects.Load())
 }

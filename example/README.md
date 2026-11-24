@@ -37,7 +37,7 @@ With Docker, watch the first request render and the second come from a file, the
 ```sh
 docker compose -f example/compose.yaml exec db psql -U hearth blog \
   -c "update posts set title = 'Hello again' where slug = 'hello-world'"
-# within POLL_SECONDS the server sees a new version and the next visit shows the new title
+# within POLL_SECONDS the server sees a new version, invalidates the pages, and the next visit shows the new title
 ```
 
 ## Where things are
@@ -49,7 +49,7 @@ docker compose -f example/compose.yaml exec db psql -U hearth blog \
 | `store.go` | the `Store` interface: `Post`, `Slugs`, `Version` |
 | `postgres.go` | the real store: `database/sql`, parameterised queries only |
 | `memory.go` | the demo and test store |
-| `main.go` | wiring: bundle, cache, `Subscribe(Poll(store.Version))`, sitemap entries, timeouts, shutdown |
+| `main.go` | wiring: bundle, cache, `watchPosts` (polls `store.Version`, calls `Invalidate`), sitemap entries, timeouts, shutdown |
 | `server_test.go` | HTTP-level tests, see below |
 | `schema.sql` | tables, `updated_at` trigger, seed rows |
 
@@ -58,7 +58,7 @@ docker compose -f example/compose.yaml exec db psql -U hearth blog \
 Real requests through the real `Site` and handler, with a fake database:
 
 - render, then a file is written; the second request is served from it (the database is asked once)
-- a version bump empties the cache and pages refill from the new data (also via `Subscribe`)
+- `Invalidate` drops only the named page and it refills from the new data (also via `watchPosts`)
 - 404, 410 and 301 write nothing; a failing database is a 500 and is not cached
 - untrusted slugs never reach the database; hostile redirect targets from the database never become redirects
 - post content is HTML-escaped; Hebrew pages are right to left and link within their language

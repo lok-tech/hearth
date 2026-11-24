@@ -9,13 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 // ErrUnsafePath is returned when a URL path cannot be mapped to a cache file safely.
 var ErrUnsafePath = errors.New("hearth: unsafe cache path")
 
-// RelPath maps a URL path to a relative file path inside a cache version
-// directory: "/" -> "index.html", "/x" -> "x/index.html". A non-empty host
+// RelPath maps a URL path to a relative file path inside the cache directory: "/" -> "index.html", "/x" -> "x/index.html". A non-empty host
 // (subdomain/domain i18n) becomes the first directory. Anything that could
 // escape the directory, or collide with it, is rejected.
 func RelPath(host, urlPath string) (string, error) {
@@ -60,11 +61,12 @@ func ValidHost(h string) bool {
 	return !strings.HasPrefix(h, ".") && !strings.Contains(h, "..")
 }
 
-// Cache stores rendered pages in versioned directories. The "current" symlink
-// points at the active version; flipping it invalidates everything at once.
+// Cache stores rendered pages as plain files under one directory, laid out as
+// <host>/<path>/index.html, so a web server can serve them directly. There are no versions: a
+// full invalidation is the deploy replacing the directory, and Invalidate drops single pages.
 type Cache struct {
 	dir     string
-	mu      sync.Mutex
+	tmpDir  string // "" writes temp files next to the page; otherwise a directory on the same mount
 	stripes [stripeCount]stripe
 }
 
@@ -86,77 +88,81 @@ func (c *Cache) stripe(rel string) *stripe {
 	return &c.stripes[h.Sum32()%stripeCount]
 }
 
-// New creates the cache root and, if absent, an initial version.
-func New(dir string) (*Cache, error) {
+// staleTemp is how old a file in the temp directory must be before New removes it. A live write
+// holds its temp file for milliseconds, so anything this old was left behind by a crash.
+const staleTemp = 10 * time.Minute
+
+// New creates the cache directory. With tmpDir set, pages are written to a temp file there and
+// renamed into place, so no temp file ever appears in the served directory. tmpDir must be on the
+// same mount as dir (rename does not cross mounts); New checks that by renaming a probe file and
+// fails with a clear error if it cannot. Files left in tmpDir by a crash are removed. An empty
+// tmpDir keeps temp files in the page's own directory as ".tmp-*" dotfiles, which a web server
+// must then never serve.
+func New(dir, tmpDir string) (*Cache, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	c := &Cache{dir: dir}
-	if _, err := c.Version(); err != nil {
-		if err := c.SetVersion("v0"); err != nil {
-			return nil, err
-		}
+	if tmpDir == "" {
+		return c, nil
 	}
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := probe(dir, tmpDir); err != nil {
+		return nil, err
+	}
+	sweep(tmpDir, staleTemp)
+	c.tmpDir = tmpDir
 	return c, nil
 }
 
-func ValidVersion(v string) bool {
-	if v == "" || len(v) > 64 {
-		return false
+// probe renames a file from tmpDir into dir, which is exactly what every cache write does.
+func probe(dir, tmpDir string) error {
+	f, err := os.CreateTemp(tmpDir, "probe-*")
+	if err != nil {
+		return fmt.Errorf("hearth: temp directory %s is not writable: %w", tmpDir, err)
 	}
-	for _, r := range v {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
-		default:
-			return false
+	name := f.Name()
+	_ = f.Close()
+	dst := filepath.Join(dir, ".hearth-probe-"+filepath.Base(name))
+	if err := os.Rename(name, dst); err != nil {
+		_ = os.Remove(name)
+		if errors.Is(err, syscall.EXDEV) {
+			return fmt.Errorf("hearth: temp directory %s and cache directory %s must be on the same mount: %w", tmpDir, dir, err)
+		}
+		return fmt.Errorf("hearth: cannot move a file from %s into %s: %w", tmpDir, dir, err)
+	}
+	return os.Remove(dst)
+}
+
+// sweep removes regular files in dir last modified more than age ago.
+func sweep(dir string, age time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cut := time.Now().Add(-age)
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.ModTime().Before(cut) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
-	return v != "." && v != ".."
 }
 
-// Version returns the active version name.
-func (c *Cache) Version() (string, error) {
-	t, err := os.Readlink(filepath.Join(c.dir, "current"))
-	if err != nil {
-		return "", err
-	}
-	return filepath.Base(t), nil
-}
+// Root returns the cache directory.
+func (c *Cache) Root() string { return c.dir }
 
-// SetVersion makes v the active version (creating its directory) by atomically
-// replacing the symlink. Old version directories are left for Prune.
-func (c *Cache) SetVersion(v string) error {
-	if !ValidVersion(v) {
-		return fmt.Errorf("hearth: invalid version %q", v)
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	vdir := filepath.Join(c.dir, "versions", v)
-	if err := os.MkdirAll(vdir, 0o755); err != nil {
-		return err
-	}
-	tmp := filepath.Join(c.dir, fmt.Sprintf(".current.%d.tmp", os.Getpid()))
-	_ = os.Remove(tmp)
-	if err := os.Symlink(filepath.Join("versions", v), tmp); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, filepath.Join(c.dir, "current")); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
-}
-
-// Root returns the directory of the active version.
-func (c *Cache) Root() string { return filepath.Join(c.dir, "current") }
-
-// Path returns the absolute file path of a cached page in the active version.
+// Path returns the absolute file path of a cached page.
 func (c *Cache) Path(host, urlPath string) (string, error) {
 	rel, err := RelPath(host, urlPath)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(c.Root(), rel), nil
+	return filepath.Join(c.dir, rel), nil
 }
 
 // Gen returns the invalidation generation of a page. Take it before reading the data a page
@@ -172,7 +178,7 @@ func (c *Cache) Gen(host, urlPath string) (uint64, error) {
 	return st.gen, nil
 }
 
-// Invalidate drops one page from the active version. It bumps the page's generation first, under
+// Invalidate drops one page. It bumps the page's generation first, under
 // the lock WriteGen takes, so a render that began earlier cannot put its (possibly stale) output
 // back after the delete: its WriteGen sees the new generation and skips the write.
 func (c *Cache) Invalidate(host, urlPath string) error {
@@ -184,39 +190,38 @@ func (c *Cache) Invalidate(host, urlPath string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.gen++
-	if err := os.Remove(filepath.Join(c.Root(), rel)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(filepath.Join(c.dir, rel)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
 }
 
-// Write stores body atomically (temp file in the same dir, then rename) in the
-// version that was active when the render started, so a flip mid-render cannot
-// leak stale content into the new version.
-func (c *Cache) Write(version, host, urlPath string, body []byte) error {
-	_, err := c.write(version, host, urlPath, body, false, 0)
+// Write stores body atomically (temp file, then rename), so readers never see a partial page.
+func (c *Cache) Write(host, urlPath string, body []byte) error {
+	_, err := c.write(host, urlPath, body, false, 0)
 	return err
 }
 
 // WriteGen is Write that only takes effect if the page was not invalidated since gen was read
 // with Gen. It reports whether the file was written.
-func (c *Cache) WriteGen(version, host, urlPath string, gen uint64, body []byte) (bool, error) {
-	return c.write(version, host, urlPath, body, true, gen)
+func (c *Cache) WriteGen(host, urlPath string, gen uint64, body []byte) (bool, error) {
+	return c.write(host, urlPath, body, true, gen)
 }
 
-func (c *Cache) write(version, host, urlPath string, body []byte, check bool, gen uint64) (bool, error) {
-	if !ValidVersion(version) {
-		return false, fmt.Errorf("hearth: invalid version %q", version)
-	}
+func (c *Cache) write(host, urlPath string, body []byte, check bool, gen uint64) (bool, error) {
 	rel, err := RelPath(host, urlPath)
 	if err != nil {
 		return false, err
 	}
-	final := filepath.Join(c.dir, "versions", version, rel)
+	final := filepath.Join(c.dir, rel)
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		return false, err
 	}
-	f, err := os.CreateTemp(filepath.Dir(final), ".tmp-*")
+	tmpIn, pattern := c.tmpDir, "page-*"
+	if tmpIn == "" {
+		tmpIn, pattern = filepath.Dir(final), ".tmp-*"
+	}
+	f, err := os.CreateTemp(tmpIn, pattern)
 	if err != nil {
 		return false, err
 	}
@@ -246,47 +251,4 @@ func (c *Cache) write(version, host, urlPath string, body []byte, check bool, ge
 		return false, err
 	}
 	return true, nil
-}
-
-// Prune removes version directories other than the active one and keep most recent others.
-func (c *Cache) Prune(keep int) error {
-	cur, err := c.Version()
-	if err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(filepath.Join(c.dir, "versions"))
-	if err != nil {
-		return err
-	}
-	type ve struct {
-		name string
-		mod  int64
-	}
-	var old []ve
-	for _, e := range entries {
-		if e.Name() == cur || !e.IsDir() {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		old = append(old, ve{e.Name(), info.ModTime().UnixNano()})
-	}
-	// newest first
-	for i := 0; i < len(old); i++ {
-		for j := i + 1; j < len(old); j++ {
-			if old[j].mod > old[i].mod {
-				old[i], old[j] = old[j], old[i]
-			}
-		}
-	}
-	for i, o := range old {
-		if i >= keep {
-			if err := os.RemoveAll(filepath.Join(c.dir, "versions", o.name)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }

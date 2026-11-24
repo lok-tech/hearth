@@ -61,7 +61,8 @@ func run() error {
 
 	site, err := hearth.New(hearth.Options{
 		Bundle:        os.DirFS(env("BUNDLE", "site/dist/templates")), // or an embed.FS, see docs/DEPLOY.md
-		CacheDir:      env("CACHE_DIR", "var/cache"),
+		CacheDir:      env("CACHE_DIR", "var/cache/public"),
+		TmpDir:        env("TMP_DIR", "var/cache/tmp"), // same mount as CacheDir, never served
 		BaseURL:       env("BASE_URL", "http://localhost:8080"),
 		MaxConcurrent: 8, // protects the database from a burst of cache misses
 		RenderTimeout: 5 * time.Second,
@@ -84,19 +85,15 @@ func run() error {
 		return err
 	}
 
-	// The library has no database driver, so the server decides what counts as a change:
-	// here, whenever the version token of the posts changes, pages refill from the new data.
+	// The library has no database driver, so the server decides what counts as a change: here,
+	// whenever the version token of the posts changes, the pages it touched are invalidated and
+	// refill from the new data. A server that writes its own data calls site.Invalidate directly.
 	interval, _ := strconv.Atoi(env("POLL_SECONDS", "5"))
-	go func() {
-		err := site.Subscribe(ctx, hearth.Poll(store.Version, time.Duration(interval)*time.Second))
-		if err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("subscribe", "err", err)
-		}
-	}()
+	go watchPosts(ctx, site, store, time.Duration(interval)*time.Second)
 
-	// A new bundle starts with an empty cache. Fill it from the sitemap in the background so the
-	// first crawler burst finds files; the site already serves (and caches) pages while this runs.
-	// Do the same after a full site.SetVersion; use site.Invalidate for targeted changes.
+	// A deploy replaces the cache directory, so a new release starts empty. Fill it from the
+	// sitemap in the background so the first crawler burst finds files; the site already serves
+	// (and caches) pages while this runs.
 	go func() {
 		if rep, err := site.WarmSitemap(ctx, 4); err != nil || len(rep.Failures) > 0 {
 			slog.Warn("warm sitemap", "ok", rep.OK, "failures", len(rep.Failures), "err", err)

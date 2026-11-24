@@ -78,9 +78,6 @@ func warmSite(t *testing.T, calls *atomic.Int64, h Handler) (*Site, string) {
 func TestWarmSitemapMakesEverySitemapPathAHit(t *testing.T) {
 	var calls atomic.Int64
 	s, dir := warmSite(t, &calls, nil)
-	if err := s.SetVersion("v2"); err != nil {
-		t.Fatal(err)
-	}
 	rep, err := s.WarmSitemap(context.Background(), 3)
 	if err != nil {
 		t.Fatal(err)
@@ -180,10 +177,10 @@ func TestWarmSitemapEntriesErrorIsReturned(t *testing.T) {
 	}
 }
 
-func TestWarmSitemapFlipMidWarmDoesNotWriteIntoNewVersion(t *testing.T) {
+func TestWarmSitemapInvalidateMidWarmDoesNotCacheTheStalePage(t *testing.T) {
 	var calls atomic.Int64
 	started, release := make(chan struct{}), make(chan struct{})
-	s, _ := newSSRSite(t, func(o *Options) {
+	s, dir := newSSRSite(t, func(o *Options) {
 		o.SitemapURLs = func(context.Context) ([]SitemapEntry, error) { return []SitemapEntry{{Path: "/post/1"}}, nil }
 		o.I18n = I18n{Mode: "prefix"}
 	})
@@ -197,7 +194,7 @@ func TestWarmSitemapFlipMidWarmDoesNotWriteIntoNewVersion(t *testing.T) {
 	done := make(chan PrerenderReport)
 	go func() { rep, _ := s.WarmSitemap(context.Background(), 1); done <- rep }()
 	<-started
-	if err := s.SetVersion("flip"); err != nil {
+	if err := s.Invalidate("/post/1"); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
@@ -205,10 +202,9 @@ func TestWarmSitemapFlipMidWarmDoesNotWriteIntoNewVersion(t *testing.T) {
 	if rep.OK == 0 {
 		t.Fatalf("%+v", rep)
 	}
-	// Pages whose render began before the flip belong to the old version. The first /post/1
-	// (en) is that page; it must not be in the active version. Later pages may be.
-	root, _ := filepath.EvalSymlinks(s.cache.Root())
-	if _, err := os.Stat(filepath.Join(root, "post", "1", "index.html")); err == nil {
-		t.Fatal("page rendered before the flip was written into the new version")
+	// The first /post/1 (en) began rendering before the invalidation, so it read data that may
+	// be stale and must not have been cached.
+	if _, err := os.Stat(filepath.Join(dir, "post", "1", "index.html")); err == nil {
+		t.Fatal("page rendered before the invalidation was cached")
 	}
 }

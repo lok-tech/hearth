@@ -353,7 +353,7 @@ rep, err := hearth.Build(ctx, site, "dist/public")
   routes, with method, path, query, body and headers intact (longest prefix wins, whole path segments only, dev
   only; `hearth check` validates it). With `vite.devURL` and a separate `vite` process, Vite's `server.proxy`
   works too.
-- After a full `SetVersion` flip, refill the cache with `go site.WarmSitemap(ctx, 4)`; for a targeted change use
+- After a deploy empties the cache, refill it with `go site.WarmSitemap(ctx, 4)`; for a targeted change use
   `site.Invalidate(...)`. A large warm costs real time and database load (see the README).
 
 ## 9. 404 and 410
@@ -408,7 +408,7 @@ checks that a stored `//attacker.example` target gets 404, not a redirect.
 **Never prerender a database-backed route.** Do not put `/candidates/{id}` in `collections`, and do not return
 those paths from `SitemapURLs` into a `hearth.Build` call: the prebuilt file is served by Caddy before Hearth
 is asked, so it shadows the redirect and the 404/410. Handler-rendered pages are cached under `cache/`, which
-`Invalidate` and `SetVersion` refresh; files in `dist/public` are never refreshed. (Caddy checks `dist/public`
+`Invalidate` and the next deploy refresh; files in `dist/public` are never refreshed by the Go server. (Caddy checks `dist/public`
 first, then the cache; see [DEPLOY.md](DEPLOY.md).)
 
 ## 13. `search.json`

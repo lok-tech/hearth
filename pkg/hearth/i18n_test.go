@@ -102,7 +102,7 @@ func TestHostModeResolvesLanguageFromHost(t *testing.T) {
 		t.Errorf("unknown host = %d", w.Code)
 	}
 	// each language is cached under its own configured host directory, never the request's
-	if _, err := os.Stat(filepath.Join(dir, "current", "he.x.test", "about", "index.html")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "he.x.test", "about", "index.html")); err != nil {
 		t.Errorf("host dir missing: %v", err)
 	}
 	if again := getHost(s, "he.x.test", "/about"); again.Body.String() != he.Body.String() {

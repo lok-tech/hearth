@@ -28,12 +28,12 @@ Dependency direction: `cmd/hearth -> internal/{build,dev,starter,config} -> pkg/
 | `internal/dev` | `NewMock` (dev-mode Site per request), `NewLive`, `NewPreview` (proxies) | config, route, cache (path mapping only), `pkg/hearth` |
 | `internal/starter` | embedded starter (`template/`), `Init` | fsutil |
 | `internal/config` | `hearth.config.json` schema and validation | cache (`ValidHost`) |
-| **`pkg/hearth`** | **the only public package**: `Site`, `Options`, `Handler`, `Prerender`, `WarmSitemap`, `Export`, `Warm`, `Poll` | every core package below |
+| **`pkg/hearth`** | **the only public package**: `Site`, `Options`, `Handler`, `Prerender`, `WarmSitemap`, `Export`, `Warm` | every core package below |
 | `internal/render` | layout + templates + helpers, `PageData` | route, manifest, i18n, data |
 | `internal/route` | `pages/` file path to route, matching, `Page.MockFile` | none |
 | `internal/i18n` | catalogs, plurals, `IsRTL`, **`URLs`** (language to URL mapping) | none |
 | `internal/manifest` | `manifest.json`, asset and image lookup, `Picture`, `PictureSet` | none |
-| `internal/cache` | versioned dirs, atomic `current` symlink, `RelPath`, `ValidHost`, `ValidVersion` | none |
+| `internal/cache` | flat page files, atomic writes through an optional temp dir, per-path invalidation, `RelPath`, `ValidHost` | none |
 | `internal/data` | read `data/*.json` safely | none |
 | `internal/fsutil` | `WriteFileAtomic` | none |
 | `internal/sitemap` | sitemap XML with `lastmod`, `Split` and `Index` for the 50,000 URL / 50 MB limits | none |
@@ -65,10 +65,10 @@ Both rules were verified by breaking them on purpose. When you add a guard, do t
 3. A trailing slash (except `/`) is a 301 to the same path without it.
 4. Unless `Dev`: read `cache.Path(host, r.URL.Path)`. A file is a hit (the cache key is the *requested* path, so
    prefix mode includes `/he/...`; host modes use the configured host directory and the neutral path).
-5. Otherwise `singleflight` on `version|host|path`, then `render`: match route, take a semaphore slot
+5. Otherwise `singleflight` on `host|path`, then `render`: match route, take a semaphore slot
    (`MaxConcurrent`, with `RenderTimeout`), call the page's handler (every `[param]` page, and every `ssr` page; a parameterless page that is not in `ssr` has none), build `PageData` with
-   `pageData(...)`, render, and write the file **under the version that was active when the render began**
-   (a flip during a render cannot leak stale content into the new version). Only 200s are written.
+   `pageData(...)`, render, and write the file, unless the page was invalidated after the render began
+   (`Cache.Gen` / `WriteGen`: a render that read old data cannot put it back). Only 200s are written.
 6. Handler outcomes: `ErrNotFound` 404 (message kept in `note`, shown only in Dev), `ErrGone` 410,
    `*RedirectError` (301, 302, 307, 308 only), anything else is a 500 and is not cached.
 7. `rendered.unmatched` (no page, unknown host, unsafe path) goes to `Options.Fallback` when set; a matched
@@ -96,19 +96,22 @@ The renderer folds a page's `{{define "robots"}}noindex{{end}}` into `NoIndex`, 
 ### Cache (`internal/cache`)
 
 ```
-<CacheDir>/current -> versions/<bundleID>.<n>          relative symlink, replaced atomically
-<CacheDir>/versions/<bundleID>.<n>/<path>/index.html
-<CacheDir>/versions/<bundleID>.<n>/<host>/<path>/index.html     host modes only
+<CacheDir>/<path>/index.html
+<CacheDir>/<host>/<path>/index.html     host modes only
 ```
 
-- `New` makes the root and a `v0` version if none exists. `Site.New` then moves to `<manifest.Version>.0` unless
-  the current version already starts with `<manifest.Version>.`: **a new bundle starts an empty cache**.
-- `Site.SetVersion(v)` flips to `<bundleID>.<v>` and prunes to `KeepVersions` (default 2). Versions and hosts are
-  validated (`ValidVersion`: letters, digits, `-_.`; `ValidHost`: lowercase letters, digits, `-.:`).
-- Writes go through a `.tmp-*` file in the page's directory and a rename. `Export` and the web server configs
-  both ignore dotfiles because of this.
-- Known minor issue: a render that began before a flip and finishes after the prune can recreate its version
-  directory (see PLAN open items).
+- The cache is flat and has no versions. A full invalidation is a deploy that replaces `CacheDir` (the reference
+  deploy runs `rsync --delete` into it); `Site.Invalidate` drops single pages. Nothing in the Go server decides
+  that a new bundle should empty the cache.
+- `Invalidate` removes `<path>/index.html` only, so it cannot touch other files in a directory shared with
+  prebuilt output (`404.html`, `sitemap.xml`, `assets/`). It bumps the page's generation first, under the lock
+  `WriteGen` takes, so a render that began earlier skips its write. Generations live in 256 hashed slots, so
+  memory does not grow with the number of pages; a shared slot can only skip a write, never keep a stale page.
+- Writes go through a temp file and a rename. With `Options.TmpDir` the temp file is created there (it must be on
+  the same mount as `CacheDir`); `New` proves that with a probe rename and fails at startup if it cannot, and
+  removes temp files older than ten minutes left by a crash. Without `TmpDir` the temp file is a `.tmp-*`
+  dotfile next to the page, which `Export` and the web server configs ignore.
+- Hosts are validated (`ValidHost`: lowercase letters, digits, `-.:`).
 
 ## A build (`internal/build/build.go`, `Run`)
 

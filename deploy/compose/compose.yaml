@@ -8,7 +8,8 @@ services:
       dockerfile: deploy/compose/Dockerfile
       target: app
     environment:
-      HEARTH_CACHE_DIR: /var/cache/hearth
+      HEARTH_CACHE_DIR: /var/cache/hearth/public
+      HEARTH_TMP_DIR: /var/cache/hearth/tmp   # same volume (rename must not cross mounts), never served
       ADDR: ":8080"
       # DATABASE_URL: ...   (your server's own settings)
     volumes:

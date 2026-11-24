@@ -34,7 +34,7 @@ The npm packages are not published yet. From a checkout of this repository:
      hearth build                          web server (Caddy, nginx) or CDN
        1. vite build  -> hashed assets         |
        2. hearth.Site -> Prerender             |-- 1. file in dist/public?          serve it
-       3. Export      -> files                 |-- 2. file in cache/current?        serve it
+       3. Export      -> files                 |-- 2. file in the cache dir?        serve it
           |                                    |
           +--> dist/public     (static)        '-- 3. miss
           '--> dist/templates  (bundle) --.            |
@@ -43,7 +43,7 @@ The npm packages are not published yet. From a checkout of this repository:
                                           |      one render at a time per URL, bounded concurrency
                                           |      your handler  -> your database
                                           '--->  same templates -> render -> write the file
-                                                   (200 only, atomically, into cache/versions/<n>)
+                                                   (200 only, atomically, into the cache dir)
                                                      |
                       next request for that URL: step 2, no Go server involved
 ```
@@ -51,11 +51,12 @@ The npm packages are not published yet. From a checkout of this repository:
 - **Routes.** `pages/about.html` is `/about`; `pages/post/[slug].html` is `post/{slug}`; `about.he.html`
   overrides one language. A `[param]` page with a collection bound in `hearth.config.json` is prerendered for
   every entry; without one it is rendered by your server.
-- **Cache.** `cache/versions/<bundle>.<n>/<path>/index.html`, with an atomic `current` symlink. A new bundle
-  starts an empty cache, so a redeploy never serves pages from the old templates. `SetVersion` flips it when
-  your data changes; pages refill lazily.
-- **No database driver in the library.** Your server decides what changed and tells Hearth
-  (`SetVersion`, or `Subscribe` with a `Source`; `hearth.Poll` is a stdlib-only one).
+- **Cache.** Flat files: `<CacheDir>/<path>/index.html`, written atomically (through `TmpDir`, on the same
+  mount, when set). There are no versions: a deploy that replaces the directory (`rsync --delete`) is the
+  full invalidation, so a redeploy never serves pages from the old templates. `Invalidate` drops single pages
+  when your data changes; they refill lazily.
+- **No database driver in the library.** Your server decides what changed and calls `site.Invalidate` with
+  the affected paths.
 
 ## A site
 
@@ -180,13 +181,14 @@ import "github.com/lok-tech/hearth/pkg/hearth"
 
 site, err := hearth.New(hearth.Options{
 	Bundle:   os.DirFS("dist/templates"), // or an embed.FS
-	CacheDir: "/var/cache/hearth",
+	CacheDir: "/var/www/mysite/public",     // what the web server serves
+	TmpDir:   "/var/www/mysite/hearth-tmp", // same mount, never served
 	BaseURL:  "https://example.com",
 })
 site.MustHandle("post/{slug}", loadPost) // a typo in the pattern fails at startup
 site.MustHandle("/candidates", loadList) // a page without a parameter must be in "ssr" in the config
 if err := site.Validate(); err != nil { log.Print(err) } // ssr pages with no handler answer 404
-go site.Subscribe(ctx, hearth.Poll(currentVersion, 5*time.Second))
+// after your data changes (after the commit): site.Invalidate("/post/42", "/")
 http.ListenAndServe(":8080", site)
 ```
 
@@ -222,12 +224,11 @@ drops the page in every language.
 sitemap index of `/sitemap-1.xml`, ... and `hearth.Build` writes the same files. `SitemapEntries` (paths only) is
 deprecated.
 
-**After a full flip, warm the cache.** `site.Invalidate("/post/42", "/candidates")` drops only the pages you
-name (all languages); use it for targeted changes. `site.SetVersion(v)` empties the whole cache, so the first
-crawler burst would re-render everything. Refill it from the sitemap in the background:
+**After a deploy, warm the cache.** `site.Invalidate("/post/42", "/candidates")` drops only the pages you
+name (all languages); use it for targeted changes. A deploy replaces the whole cache directory, so the first
+crawler burst would re-render everything. Refill it from the sitemap in the background at startup:
 
 ```go
-site.SetVersion("v43")
 go func() {
 	rep, err := site.WarmSitemap(ctx, 4) // 4 pages at a time, on top of MaxConcurrent
 	log.Printf("warm: %d ok, %d failed, err %v", rep.OK, len(rep.Failures), err)
@@ -237,8 +238,8 @@ go func() {
 `WarmSitemap` renders every page the sitemap lists (static pages, `ssr` pages, `SitemapURLs`) in every language
 through the normal request path, so `MaxConcurrent`, `RenderTimeout`, singleflight and "only 200s are cached"
 all apply. `ssr` and static pages come first. A failing page is listed in `rep.Failures`, not fatal; cancelling
-`ctx` stops it. Each page is written into the cache version that was active when its render began, so a flip
-during the warm cannot put old pages into the new version. A large site costs real time and database load
+`ctx` stops it. A page that is invalidated while its render is running is not cached, so an `Invalidate`
+during the warm cannot be undone by it. A large site costs real time and database load
 (one handler call per page per language); the site already serves, and caches on demand, while it runs. Lower
 the concurrency to protect the database. `Site.Warm(ctx, urls, n)` warms literal URLs instead.
 
@@ -305,14 +306,15 @@ things your responsibility.
 4. **Validate redirect targets.** `hearth.Redirect` sends the target to the browser as given. If it comes from
    a database, check it is a plain on-site path (the example builds it as `"/post/" + validatedSlug`).
 5. **Return errors, not partial pages.** Only 200 responses are written. A handler that swallows a failed
-   lookup and returns empty data gets an empty page cached until the next version flip.
+   lookup and returns empty data gets an empty page cached until that page is invalidated or the next deploy.
 6. **`BaseURL` is configuration, not input.** Canonical, hreflang and sitemap URLs never come from the
    `Host` header. In subdomain/domain mode an unknown `Host` is a 404, and each language is cached under the host
    *you configured*, never the request's.
-7. **Keep `/healthz` internal.** It reports counters and the cache version. The shipped web server configs
+7. **Keep `/healthz` internal.** It reports counters. The shipped web server configs
    restrict it to private ranges.
-8. **Never serve dotfiles from the cache.** The cache writes through `.tmp-*` files; the web server configs
-   deny all dotfiles.
+8. **Keep temp files out of the served tree.** Set `TmpDir` to a directory on the same mount that the web
+   server does not serve. Without it the cache writes `.tmp-*` dotfiles next to the pages, and the web server
+   must deny all dotfiles (the shipped configs do).
 9. **Mount the cache read-only in the web server**, run the Go server as a non-root user that owns it, and
    put rate limiting in front. Misses are bounded (`MaxConcurrent`, `RenderTimeout`, one render per URL at a
    time) so a 404 flood cannot exhaust your database, but unrouted URLs still reach the Go server.
@@ -326,8 +328,7 @@ things your responsibility.
 
 - **Pages that differ per user or per request:** dashboards, carts, anything behind a login, search results
   keyed by query string. The cache is per URL path.
-- **Data that changes constantly.** `SetVersion` empties the whole cache and `Site.Invalidate("/post/42")` drops
-  named pages, but there is no tag or dependency tracking: you name every affected page (lists, related
+- **Data that changes constantly.** `Site.Invalidate("/post/42")` drops named pages and a deploy empties the cache, but there is no tag or dependency tracking: you name every affected page (lists, related
   pages). A site where rows change every few seconds would re-render continuously. It suits content that
   changes a few times an hour or less.
 - **Content pipelines.** There is no Markdown, no CMS integration, and local data is JSON only.

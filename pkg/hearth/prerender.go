@@ -35,8 +35,8 @@ type PrerenderReport struct {
 }
 
 // Prerender renders every language-neutral path (such as "/about" or "/post/42") in every language
-// of the site, exactly as a visitor's request would, and leaves the files in the active cache
-// version. `hearth build` is this call plus Export, so the static output and the server cannot differ.
+// of the site, exactly as a visitor's request would, and leaves the files in the cache directory.
+// `hearth build` is this call plus Export, so the static output and the server cannot differ.
 // A path that does not answer 200 is a failure. concurrency bounds parallel pages.
 func (s *Site) Prerender(ctx context.Context, paths []string, concurrency int) PrerenderReport {
 	if concurrency <= 0 {
@@ -112,15 +112,11 @@ func (s *Site) Prerender(ctx context.Context, paths []string, concurrency int) P
 	return rep
 }
 
-// Export copies every page in the active cache version to dst, keeping the cache layout
+// Export copies every file in the cache directory to dst, keeping the cache layout
 // (<host>/<path>/index.html), so it can be deployed to any static host. Files are written
 // atomically; existing files in dst are overwritten and others are left alone.
 func (s *Site) Export(dst string) error {
-	root, err := filepath.EvalSymlinks(s.cache.Root())
-	if err != nil {
-		return err
-	}
-	src := os.DirFS(root)
+	src := os.DirFS(s.cache.Root())
 	return fs.WalkDir(src, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

@@ -1,7 +1,6 @@
 package hearth
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -73,7 +72,7 @@ func get(s http.Handler, path string, hdr ...string) *httptest.ResponseRecorder 
 func cachedFiles(t *testing.T, dir string) []string {
 	t.Helper()
 	var out []string
-	_ = filepath.Walk(filepath.Join(dir, "versions"), func(p string, i os.FileInfo, err error) error {
+	_ = filepath.Walk(dir, func(p string, i os.FileInfo, err error) error {
 		if err == nil && !i.IsDir() {
 			out = append(out, p)
 		}
@@ -104,19 +103,6 @@ func TestRenderWriteThenServeFromFile(t *testing.T) {
 	}
 	if w3 := get(s, "/post/1", "If-None-Match", w2.Header().Get("ETag")); w3.Code != 304 {
 		t.Errorf("conditional = %d", w3.Code)
-	}
-}
-
-func TestVersionBumpRefillsLazily(t *testing.T) {
-	db := &fakeDB{}
-	s, _ := newTestSite(t, db)
-	get(s, "/post/1")
-	if err := s.SetVersion("v2"); err != nil {
-		t.Fatal(err)
-	}
-	get(s, "/post/1")
-	if db.calls.Load() != 2 {
-		t.Fatalf("calls = %d, want 2 (re-render after flip)", db.calls.Load())
 	}
 }
 
@@ -189,33 +175,6 @@ func TestHandlerTypoFailsAtStartup(t *testing.T) {
 	s, _ := newTestSite(t, &fakeDB{})
 	if err := s.Handle("post/{slug}", (&fakeDB{}).load); err == nil {
 		t.Fatal("typo must fail")
-	}
-}
-
-func TestPollNotifiesOnChange(t *testing.T) {
-	var n atomic.Int64
-	src := Poll(func(ctx context.Context) (string, error) {
-		if n.Add(1) <= 2 {
-			return "a", nil
-		}
-		return "b", nil
-	}, 5*time.Millisecond)
-	got := make(chan string, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	go src.Watch(ctx, func(v string) {
-		select {
-		case got <- v:
-		default:
-		}
-	})
-	select {
-	case v := <-got:
-		if v != "b" {
-			t.Fatalf("v = %q", v)
-		}
-	case <-ctx.Done():
-		t.Fatal("no notification")
 	}
 }
 

@@ -34,11 +34,11 @@ type Store interface {
 	Post(ctx context.Context, slug string) (Post, error)
 	// Slugs lists every published post, for the sitemap (deleted posts must not be in it).
 	Slugs(ctx context.Context) ([]string, error)
-	// Version is a short token that changes whenever any post changes. The server flips its
-	// page cache when the token changes, so pages refill from the new data.
+	// Version is a short token that changes whenever any post changes. The server invalidates
+	// the affected pages when the token changes, so they refill from the new data.
 	Version(ctx context.Context) (string, error)
 }
 
 func versionOf(maxUpdated time.Time, count int) string {
-	return fmt.Sprintf("%x-%d", maxUpdated.UnixMicro(), count) // letters, digits, "-": a valid cache version
+	return fmt.Sprintf("%x-%d", maxUpdated.UnixMicro(), count)
 }
