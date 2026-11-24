@@ -14,7 +14,6 @@ import (
 
 	"github.com/lok-tech/hearth/internal/data"
 	"github.com/lok-tech/hearth/internal/i18n"
-	"github.com/lok-tech/hearth/internal/manifest"
 	"github.com/lok-tech/hearth/internal/route"
 )
 
@@ -33,7 +32,7 @@ type PageData struct {
 	Prefix     string            // URL prefix of this language ("/he", or "" for default/other i18n modes)
 	Status     int               // HTTP status of this response: 200, or 404/410 in the error templates
 	NoIndex    bool              // the layout emits <meta name="robots" content="noindex">; see Render
-	Dev        bool              // true under `hearth dev` with a Vite dev server (it serves assets, no hashed CSS file)
+	HMR        bool              // assets come from a Vite dev server (it serves them, there is no hashed CSS file)
 }
 
 // Link returns path inside the current language: Link "/about" -> "/he/about",
@@ -45,26 +44,43 @@ func (d PageData) Link(path string) string {
 	return d.Prefix + path
 }
 
-// Renderer parses and renders templates from a bundle. Parsed sets are cached per (page, lang).
+// Assets resolves what templates ask for: {{asset}}, {{entry}}, {{picture}} and {{pictureSet}}.
+// *manifest.Manifest is the implementation (bundle manifest, Vite dev server or placeholders).
+type Assets interface {
+	Asset(name string) (string, error)
+	Entry(name string) (template.HTML, error)
+	PictureArgs(args ...string) (template.HTML, error)
+	PictureSetArgs(args ...string) (template.HTML, error)
+	// HMR reports whether assets come from a Vite dev server.
+	HMR() bool
+}
+
+// Templates supplies the parsed template set of a page in a language.
+type Templates interface {
+	Get(pg *route.Page, lang string) (*template.Template, error)
+}
+
+// Renderer renders pages from a bundle. Where the parsed templates come from is a Templates.
 type Renderer struct {
 	fsys     fs.FS
 	routes   *route.Table
-	manifest *manifest.Manifest
+	assets   Assets
 	catalogs *i18n.Catalogs
 	data     fs.FS // data/ folder for the "data" helper; may be nil
 	extra    template.FuncMap
-
-	mu    sync.RWMutex
-	cache map[string]*template.Template
+	tpl      Templates
 }
 
-// Options configures New. Manifest, Catalogs and Data are optional.
+// Options configures New. Assets, Catalogs and Data are optional.
 type Options struct {
 	FS       fs.FS
 	Routes   *route.Table
-	Manifest *manifest.Manifest
+	Assets   Assets
 	Catalogs *i18n.Catalogs
 	Data     fs.FS
+	// Reparse reads and parses the templates again on every render, so an edit to a file shows on the
+	// next request. Default: parse a page once and keep it.
+	Reparse bool
 	// Funcs are extra template functions. Names must not shadow a built-in helper or a Go template
 	// builtin; each value is a func with one result, or a result plus error.
 	Funcs template.FuncMap
@@ -78,12 +94,15 @@ func New(o Options) (*Renderer, error) {
 	if _, err := fs.Stat(o.FS, LayoutName); err != nil {
 		return nil, fmt.Errorf("hearth: missing %s: %w", LayoutName, err)
 	}
-	r := &Renderer{fsys: o.FS, routes: o.Routes, manifest: o.Manifest, catalogs: o.Catalogs, data: o.Data,
-		cache: map[string]*template.Template{}}
+	r := &Renderer{fsys: o.FS, routes: o.Routes, assets: o.Assets, catalogs: o.Catalogs, data: o.Data}
 	if err := r.checkFuncs(o.Funcs); err != nil {
 		return nil, err
 	}
 	r.extra = o.Funcs
+	r.tpl = &onceTemplates{parse: r.parse, cache: map[string]*template.Template{}}
+	if o.Reparse {
+		r.tpl = requestTemplates{parse: r.parse}
+	}
 	return r, nil
 }
 
@@ -162,28 +181,28 @@ func (r *Renderer) builtinFuncs(lang string) template.FuncMap {
 			return r.catalogs.Plural(lang, key, n)
 		},
 		"asset": func(name string) (string, error) {
-			if r.manifest == nil {
+			if r.assets == nil {
 				return "", fmt.Errorf("hearth: no manifest loaded")
 			}
-			return r.manifest.Asset(name)
+			return r.assets.Asset(name)
 		},
 		"entry": func(name string) (template.HTML, error) {
-			if r.manifest == nil {
+			if r.assets == nil {
 				return "", fmt.Errorf("hearth: no manifest loaded")
 			}
-			return r.manifest.Entry(name)
+			return r.assets.Entry(name)
 		},
 		"picture": func(args ...string) (template.HTML, error) {
-			if r.manifest == nil {
+			if r.assets == nil {
 				return "", fmt.Errorf("hearth: no manifest loaded")
 			}
-			return r.manifest.PictureArgs(args...)
+			return r.assets.PictureArgs(args...)
 		},
 		"pictureSet": func(args ...string) (template.HTML, error) {
-			if r.manifest == nil {
+			if r.assets == nil {
 				return "", fmt.Errorf("hearth: no manifest loaded")
 			}
-			return r.manifest.PictureSetArgs(args...)
+			return r.assets.PictureSetArgs(args...)
 		},
 		"json": JSONForScript,
 		"data": func(name string) (any, error) {
@@ -195,17 +214,49 @@ func (r *Renderer) builtinFuncs(lang string) template.FuncMap {
 	}
 }
 
-func (r *Renderer) get(pg *route.Page, lang string) (*template.Template, error) {
+// onceTemplates parses a page's template set the first time it is asked for and keeps it.
+type onceTemplates struct {
+	parse func(pg *route.Page, lang string) (*template.Template, error)
+	mu    sync.RWMutex
+	cache map[string]*template.Template
+}
+
+func (o *onceTemplates) Get(pg *route.Page, lang string) (*template.Template, error) {
+	key := pg.File
+	if f, ok := pg.Langs[lang]; ok {
+		key = f
+	}
+	key += "|" + lang
+	o.mu.RLock()
+	t, ok := o.cache[key]
+	o.mu.RUnlock()
+	if ok {
+		return t, nil
+	}
+	t, err := o.parse(pg, lang)
+	if err != nil {
+		return nil, err
+	}
+	o.mu.Lock()
+	o.cache[key] = t
+	o.mu.Unlock()
+	return t, nil
+}
+
+// requestTemplates parses on every call. There is no change detection: the files are read again each time.
+type requestTemplates struct {
+	parse func(pg *route.Page, lang string) (*template.Template, error)
+}
+
+func (q requestTemplates) Get(pg *route.Page, lang string) (*template.Template, error) {
+	return q.parse(pg, lang)
+}
+
+// parse reads the layout, the partials and the page from the bundle into one template set.
+func (r *Renderer) parse(pg *route.Page, lang string) (*template.Template, error) {
 	file := pg.File
 	if f, ok := pg.Langs[lang]; ok {
 		file = f
-	}
-	key := file
-	r.mu.RLock()
-	t, ok := r.cache[key+"|"+lang]
-	r.mu.RUnlock()
-	if ok {
-		return t, nil
 	}
 	files := []string{LayoutName}
 	if parts, err := fs.Glob(r.fsys, "partials/*.html"); err == nil {
@@ -213,7 +264,7 @@ func (r *Renderer) get(pg *route.Page, lang string) (*template.Template, error) 
 		files = append(files, parts...)
 	}
 	files = append(files, file)
-	t = template.New(path.Base(LayoutName)).Funcs(r.funcs(lang)).Option("missingkey=error")
+	t := template.New(path.Base(LayoutName)).Funcs(r.funcs(lang)).Option("missingkey=error")
 	for _, f := range files {
 		b, err := fs.ReadFile(r.fsys, f)
 		if err != nil {
@@ -230,9 +281,6 @@ func (r *Renderer) get(pg *route.Page, lang string) (*template.Template, error) 
 			return nil, fmt.Errorf("hearth: %s: %w", f, err)
 		}
 	}
-	r.mu.Lock()
-	r.cache[key+"|"+lang] = t
-	r.mu.Unlock()
 	return t, nil
 }
 
@@ -244,7 +292,7 @@ func (r *Renderer) Render(pg *route.Page, d PageData) ([]byte, error) {
 	if d.Dir == "" {
 		d.Dir = "ltr"
 	}
-	t, err := r.get(pg, d.Lang)
+	t, err := r.tpl.Get(pg, d.Lang)
 	if err != nil {
 		return nil, err
 	}

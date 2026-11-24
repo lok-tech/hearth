@@ -2,6 +2,7 @@ package hearth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -116,6 +117,9 @@ func (s *Site) Prerender(ctx context.Context, paths []string, concurrency int) P
 // (<host>/<path>/index.html), so it can be deployed to any static host. Files are written
 // atomically; existing files in dst are overwritten and others are left alone.
 func (s *Site) Export(dst string) error {
+	if s.cache.Root() == "" {
+		return errors.New("hearth: the page cache is off (HEARTH_CACHE=off): there are no pages to export")
+	}
 	src := os.DirFS(s.cache.Root())
 	return fs.WalkDir(src, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

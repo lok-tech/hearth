@@ -24,12 +24,13 @@ func newServer(t *testing.T) (*hearth.Site, *Memory, string) {
 	store := NewMemory().Seed()
 	dir := t.TempDir()
 	site, err := hearth.New(hearth.Options{
-		Bundle:        os.DirFS("site"), // the source tree is a valid bundle when assets are lenient
-		LenientAssets: true,
-		CacheDir:      dir,
-		BaseURL:       "https://blog.test",
-		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		SSR:           []string{"/"}, // a built bundle carries this in manifest.json; the source tree does not
+		Bundle:    os.DirFS("site"), // the source tree is a valid bundle with placeholder assets
+		Overrides: hearth.Overrides{Assets: "placeholder"},
+		IgnoreEnv: true,
+		CacheDir:  dir,
+		BaseURL:   "https://blog.test",
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SSR:       []string{"/"}, // a built bundle carries this in manifest.json; the source tree does not
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +242,7 @@ func TestHebrewPagesAreRightToLeftAndLinkWithinTheLanguage(t *testing.T) {
 
 func TestSitemapListsDatabasePostsInEveryLanguage(t *testing.T) {
 	store := NewMemory().Seed()
-	site, err := hearth.New(hearth.Options{Bundle: os.DirFS("site"), LenientAssets: true, CacheDir: t.TempDir(),
+	site, err := hearth.New(hearth.Options{Bundle: os.DirFS("site"), Overrides: hearth.Overrides{Assets: "placeholder"}, IgnoreEnv: true, CacheDir: t.TempDir(),
 		BaseURL: "https://blog.test", Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		SitemapEntries: func(ctx context.Context) ([]string, error) {
 			slugs, err := store.Slugs(ctx)

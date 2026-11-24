@@ -11,7 +11,7 @@ A page is rendered by **one engine**, `pkg/hearth`'s `Site`, no matter who asks:
 - a visitor's request to a server on a cache miss,
 - `hearth build` (prerender every page, export the files),
 - `hearth check` (trial render), and
-- `hearth dev` (a dev-mode `Site` over the source tree).
+- `hearth dev` (a `Site` over the source tree, built with the dev overrides).
 
 Nothing else renders. That is what makes a prebuilt file and a server-rendered page byte-identical.
 Two tests protect it (see "Guard tests"). If you find yourself writing a second code path that builds a
@@ -25,11 +25,13 @@ Dependency direction: `cmd/hearth -> internal/{build,dev,starter,config} -> pkg/
 |---|---|---|
 | `cmd/hearth` | argument parsing, exit codes, `serve` loop | build, config, dev, starter |
 | `internal/build` | `Run` (Vite, bundle copy, prerender via Site, sitemap/robots), `Check`, `planPages` | config, data, fsutil, manifest, route, i18n, `pkg/hearth` |
-| `internal/dev` | `NewMock` (dev-mode Site per request), `NewLive`, `NewPreview` (proxies) | config, route, cache (path mapping only), `pkg/hearth` |
+| `internal/dev` | `NewMock` (a Site per request with the dev overrides), `NewWatch`, `NewLive`, `NewPreview` (proxies) | config, route, cache (path mapping only), `pkg/hearth` |
 | `internal/starter` | embedded starter (`template/`), `Init` | fsutil |
 | `internal/config` | `hearth.config.json` schema and validation | cache (`ValidHost`) |
 | **`pkg/hearth`** | **the only public package**: `Site`, `Options`, `Handler`, `Prerender`, `WarmSitemap`, `Export`, `Warm` | every core package below |
-| `internal/render` | layout + templates + helpers, `PageData` | route, manifest, i18n, data |
+| `internal/render` | layout + templates + helpers, `PageData`, the `Templates` and `Assets` seams | route, manifest, i18n, data |
+| `internal/cache` | the `Store` seam: `*Cache` (files) and `Nop` | none |
+| `internal/manifest` | `manifest.json` and the three asset resolvers: `*Manifest`, `Placeholder`, `Vite` | none |
 | `internal/route` | `pages/` file path to route, matching, `Page.MockFile` | none |
 | `internal/i18n` | catalogs, plurals, `IsRTL`, **`URLs`** (language to URL mapping) | none |
 | `internal/manifest` | `manifest.json`, asset and image lookup, `Picture`, `PictureSet` | none |
@@ -63,24 +65,25 @@ Both rules were verified by breaking them on purpose. When you add a guard, do t
    the `Host` to a language (case-insensitive, port ignored). Unknown host: `unmatched` 404.
 2. `cache.RelPath("", neutralPath)` rejects anything that cannot be a safe file name (`..`, `.`, backslash, NUL).
 3. A trailing slash (except `/`) is a 301 to the same path without it.
-4. Unless `Dev`: read `cache.Path(host, r.URL.Path)`. A file is a hit (the cache key is the *requested* path, so
+4. `store.Get(host, r.URL.Path)`; with the page cache off (`HEARTH_CACHE=off`, `cache.Nop`) it always misses. A file is a hit (the cache key is the *requested* path, so
    prefix mode includes `/he/...`; host modes use the configured host directory and the neutral path).
 5. Otherwise `singleflight` on `host|path`, then `render`: match route, take a semaphore slot
    (`MaxConcurrent`, with `RenderTimeout`), call the page's handler (every `[param]` page, and every `ssr` page; a parameterless page that is not in `ssr` has none), build `PageData` with
    `pageData(...)`, render, and write the file, unless the page was invalidated after the render began
-   (`Cache.Gen` / `WriteGen`: a render that read old data cannot put it back). Only 200s are written.
-6. Handler outcomes: `ErrNotFound` 404 (message kept in `note`, shown only in Dev), `ErrGone` 410,
+   (`Store.Gen` / `Put` returning `cache.ErrStale`: a render that read old data cannot put it back). Only 200s are written.
+6. Handler outcomes: `ErrNotFound` 404 (message kept in `note`, shown only with `HEARTH_DIAGNOSTICS=1`), `ErrGone` 410,
    `*RedirectError` (301, 302, 307, 308 only), anything else is a 500 and is not cached.
-7. `rendered.unmatched` (no page, unknown host, unsafe path) goes to `Options.Fallback` when set; a matched
-   page that is not found does not.
-8. Any 404 or 410 that is not a redirect or a Fallback goes through `writeError`: `errorBody(lang, status)`
+7. A path no page claims (no page, unknown host, unsafe path) is a 404 like any other. `Site` never serves or proxies
+   it elsewhere; `Site.Matches(r)` tells a mux, or `hearth dev`, which requests are not Site's, so they can send
+   those on (`search.json`, the Vite dev server).
+8. Any 404 or 410 that is not a redirect goes through `writeError`: `errorBody(lang, status)`
    renders `pages/404.html` / `410.html` (not routes: `route.Table.ErrorPage`) with `Status` and `NoIndex` set,
    `no-store`, never cached; plain text when the template is missing, the host is unknown or the render fails.
    `hearth.Build` writes `errorBody(lang, 404)` as `404.html` through the same function.
 
 `pageData(lang, neutral, params, data, meta)` is the **single place** that decides what a template sees:
 `Lang`, `Dir` (`i18n.IsRTL`), `Params`, `Data`, `Canonical` (`meta.Canonical`, else `urls.Abs` when there is an
-origin), `Alternates` (`urls.Alternates`, nil for one language or no `BaseURL`), `Prefix`, `Status` (200), `NoIndex` (`meta.NoIndex`), `Dev`.
+origin), `Alternates` (`urls.Alternates`, nil for one language or no `BaseURL`), `Prefix`, `Status` (200), `NoIndex` (`meta.NoIndex`), `HMR` (assets come from a Vite dev server).
 The renderer folds a page's `{{define "robots"}}noindex{{end}}` into `NoIndex`, so the layout emits one tag either way.
 
 ### Language and URL rules (`internal/i18n/urls.go`)
@@ -128,7 +131,7 @@ answers for `/sitemap.xml` and `/robots.txt` once per origin (a root, or one dir
 - `planPages` lists static pages (not `ssr` pages: their handlers answer, so no file may exist) and each entry of every configured collection. Collection values must be
   non-empty, unique, free of `/ \ ? # % NUL`, and not `.` or `..`. Each collection becomes a `hearth.Handler`
   over the JSON entries (the build's stand-in for a database).
-- `Check` uses the same `planPages` and `newSite` (with `LenientAssets`) over the source tree, and adds checks
+- `Check` uses the same `planPages` and `newSite` (with the placeholder asset resolver) over the source tree, and adds checks
   on catalogs, data JSON and `*.mock.json` shapes. It collects every problem instead of stopping at the first.
 
 ### Vite contract
@@ -149,14 +152,15 @@ answers for `/sitemap.xml` and `/robots.txt` once per origin (a root, or one dir
 ### `manifest.json` and bundle format
 
 `{ "format": 3, "assets": {...}, "entries": {...}, "images": {...}, "version": "<build id>", "ssr": ["/candidates"] }` (`ssr` lists the parameterless pages served by handlers; format 2 added it, format 3 added `entries` for `{{entry}}`). `manifest.BundleFormat` must match
-or `Parse` fails loudly. Bump it when the bundle layout or manifest meaning changes. `Manifest.DevBase` (Vite dev
-URL) and `Manifest.Lenient` (placeholder for unknown assets) are runtime-only (`json:"-"`).
+or `Parse` fails loudly. Bump it when the bundle layout or manifest meaning changes. The Vite
+dev URL and placeholder behaviour are not manifest data: they are the `Vite` and `Placeholder` resolvers in
+`internal/manifest/resolvers.go`, chosen by `HEARTH_ASSETS`.
 
 ## Templates (`internal/render`)
 
 - Root template `layouts/base.html` (`render.LayoutName`) defines blocks `title description head body`. A page
   file overrides them with `{{define}}`. All `partials/*.html` are parsed into every page's set. A page is parsed
-  once per `(file, lang)` and cached; `about.he.html` replaces `about.html` for `he`.
+  once per `(file, lang)` and cached (`HEARTH_TEMPLATES=request` parses on every render instead); `about.he.html` replaces `about.html` for `he`.
 - `missingkey=error`: a missing data key or translation fails the render.
 - Helpers: `t`, `plural`, `asset`, `entry`, `picture(name, alt [, sizes] [, "eager"])`, `pictureSet(alt, sizes, media, name, ..., "", fallback [, "eager"])`, `json`, `data`, plus `Options.Funcs`. `PageData.Link(path)` is a method.
 - `Options.Funcs` is validated in `render.New` (`checkFuncs`): no shadowing of a helper or Go builtin, valid name, a
@@ -164,22 +168,45 @@ URL) and `Manifest.Lenient` (placeholder for unknown assets) are runtime-only (`
   (`internal/mock.Stubs`) that parse but fail when called; `Check` reports such pages with `build.NeedsProgram`.
 - `{{entry "src/site.ts"}}` (`Manifest.Entry`, returns `template.HTML`) emits a `<link rel="stylesheet">` per CSS file,
   a `<link rel="modulepreload">` per imported chunk and the `<script type="module">`, all from `entries`, escaped and
-  with `assetBase` already prefixed. With a Vite dev server (`DevBase`) it emits the Vite client and the module
-  script instead, so a layout needs no `{{if .Dev}}`. Lenient mode (`check`) resolves an unknown entry to a bare
+  with `assetBase` already prefixed. With the `Vite` resolver it emits the Vite client and the module
+  script instead, so a layout needs no branch. The `Placeholder` resolver (`check`) resolves an unknown entry to a bare
   script placeholder; anywhere else an unknown entry fails the render. Several entries can be used on one page
   (a layout entry plus a page entry from a block): a CSS file shared by two calls is not de-duplicated across calls.
-- `{{if .Dev}}` remains available for layouts that still want to branch on the dev server.
+- `{{if .HMR}}` is available for layouts that still want to branch on the dev server (`.Dev` was removed).
 - `html/template` escapes by context; there is deliberately no helper that returns raw HTML from user data.
 
 ## `hearth dev`
 
-- `mock`: `dev.NewMock` builds a **new** `Site` on every request (`Dev: true`, bundle = source tree) so edits show
+- Who it is for: a site with **no Go server of its own** (templates and data, built to static files). A project
+  with a Go server runs that server and uses the `hearthDev()` Vite plugin instead (see "Layers and overrides").
+- Every mode builds its `Site` with `Overrides` (cache off, diagnostics on, placeholder or Vite assets) and
+  `IgnoreEnv: true`, so a `HEARTH_*` variable in a shell cannot change it. What no page claims goes to the mode's
+  fallback, decided by `Site.Matches`.
+- `mock`: `dev.NewMock` builds a **new** `Site` on every request (bundle = source tree) so edits show
   immediately. Dynamic pages get a handler reading `pages/<path>.mock.json` (`{ "<param value>": data, "*": data }`); `ssr` pages read the whole file as their data (`internal/mock`, shared with `check`).
-  `Fallback` is the Vite proxy; `DevAssetURL` is the Vite URL.
+  The fallback is the Vite proxy; `HEARTH_ASSETS=vite:<url>` semantics (the `Vite` resolver) point `{{asset}}` at it.
 - `live`: reverse proxy to `dev.server`. `preview`: a file from `dist/public` (mapped with `cache.RelPath`), else
   the same proxy.
-- `hearth dev` starts Vite itself in **watch mode** (`dev.NewWatch`): `vite build --watch` into `node_modules/.cache/hearth-dev`, one address for pages and assets, the latest Vite manifest overlaid onto the source bundle per request (last good one kept while a rebuild empties the directory), `.vite`/`.hearth` never served. No HMR, but **live reload** (`internal/dev/reload.go`): a poller fingerprints `pages layouts partials locales data public` plus the Vite manifest's mtime (`src/` is left out so the reload follows the rebuild, never precedes it), and after a 150 ms settle it signals browsers over server-sent events at `/__hearth/reload`; a small script is injected before `</body>` of HTML responses only. Setting `vite.devURL` selects the older proxy mode instead (run `vite` yourself; `{{asset}}` points at it and templates see `.Dev`).
+- `hearth dev` starts Vite itself in **watch mode** (`dev.NewWatch`): `vite build --watch` into `node_modules/.cache/hearth-dev`, one address for pages and assets, the latest Vite manifest overlaid onto the source bundle per request (last good one kept while a rebuild empties the directory), `.vite`/`.hearth` never served. No HMR, but **live reload** (`internal/dev/reload.go`): a poller fingerprints `pages layouts partials locales data public` plus the Vite manifest's mtime (`src/` is left out so the reload follows the rebuild, never precedes it), and after a 150 ms settle it signals browsers over server-sent events at `/__hearth/reload`; a small script is injected before `</body>` of HTML responses only. Setting `vite.devURL` selects the older proxy mode instead (run `vite` yourself; `{{asset}}` points at it and templates see `.HMR`).
 - `dev.proxy` (`internal/dev/proxy.go`, validated in `config.ValidateProxy`, so `check` and `config.Load` reject bad entries): `withProxy` wraps the whole dev handler in both modes, outside live reload, so a prefix is checked before page routes, the Vite fallback and reload injection. Longest prefix first, whole path segments, `httputil.ReverseProxy` with `Rewrite` (`SetURL` sets the backend `Host`, `SetXForwarded`). `preview`, `-live` and production never read it.
+
+## Layers and overrides
+
+Design and decisions: [LAYERS.md](LAYERS.md). The short version, for someone changing `pkg/hearth`:
+
+- A `Site` is four seams with production defaults: **templates** (`render.Templates`: parse once, or on every
+  request), **render** (`Site.resolve`/`render`, no mode), **store** (`cache.Store`: files, or `Nop`) and **assets**
+  (`render.Assets`: `*Manifest`, `Placeholder`, `Vite`). `Site` itself is a thin `http.Handler` over them.
+- There is no "dev mode". `Options.Overrides` and the `HEARTH_*` variables (`pkg/hearth/overrides.go`) pick another
+  implementation per seam, and the environment wins over code. `New` logs one `WARN` when the environment changed
+  anything. Tools set `IgnoreEnv`.
+- `HEARTH_BUNDLE` replaces `Options.Bundle` with `os.DirFS(dir)` in `New`, before anything reads the bundle. With no
+  `manifest.json` (a source tree, which needs `placeholder` or `vite:` assets) `configSSR` reads the `ssr` list from
+  `hearth.config.json` at the bundle root, so the server does not have to; a bundle that has a manifest ignores it.
+- Do not add a check like `if devMode` to `Site`. Add or select an implementation of a seam.
+- Serving and proxying in development are not Go package concerns: the `hearthDev()` Vite plugin
+  (`npm/hearth/vite.js`) reloads on template edits and proxies to the importer's server; `hearth dev` does the same
+  job for sites without one.
 
 ## Files that look odd on purpose
 

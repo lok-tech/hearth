@@ -3,7 +3,9 @@ package hearth
 import (
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -63,7 +65,9 @@ type I18n struct {
 
 // Options configures a Site.
 type Options struct {
-	Bundle fs.FS // dist/templates (embed.FS sub or os.DirFS)
+	// Bundle is dist/templates (an embed.FS sub or os.DirFS). HEARTH_BUNDLE replaces it with a directory, so the
+	// same server can read the source tree in development.
+	Bundle fs.FS
 	// CacheDir is where rendered pages are written as plain files (<CacheDir>/<path>/index.html),
 	// the directory the web server serves. It is flat: no versions. A deploy that replaces the
 	// directory is the full invalidation; Invalidate drops single pages.
@@ -79,19 +83,15 @@ type Options struct {
 
 	MaxConcurrent int           // concurrent renders; default 8
 	RenderTimeout time.Duration // default 10s
-	CacheControl  string        // default "public, max-age=0, must-revalidate" ("no-store" in Dev)
+	CacheControl  string        // default "public, max-age=0, must-revalidate" ("no-store" when the page cache is off)
 	Logger        *slog.Logger
 
-	// Dev never reads or writes the cache, and manifest.json may be missing.
-	Dev bool
-	// DevAssetURL is the Vite dev server; in Dev, {{asset "x"}} resolves to DevAssetURL + "/x" and
-	// templates see .Dev == true. Without it, Dev uses the bundle manifest like a production site.
-	DevAssetURL string
-	// LenientAssets makes unknown assets and images resolve to placeholders instead of failing
-	// the render (used by `hearth check`, which runs without a Vite build).
-	LenientAssets bool
-	// Fallback answers requests that match no page (for example the Vite dev server).
-	Fallback http.Handler
+	// Overrides changes how the layers behave (see Overrides). The HEARTH_* environment variables are
+	// applied on top of it and win. The zero value is the production setup.
+	Overrides Overrides
+	// IgnoreEnv skips the HEARTH_* environment variables. It is for tools whose output must not depend
+	// on the environment (`hearth build`, `check` and `dev` set it); a server should not.
+	IgnoreEnv bool
 
 	// Funcs adds template functions next to the built-in helpers (t, plural, asset, entry, picture, pictureSet,
 	// json, data). A name may not shadow a helper or a Go template builtin, and each value must
@@ -173,7 +173,7 @@ type Site struct {
 	opt        Options
 	routes     *route.Table
 	renderer   *render.Renderer
-	cache      *cache.Cache
+	cache      cache.Store
 	urls       i18n.URLs
 	handlers   map[string]Handler
 	ssr        map[string]bool           // parameterless page patterns served by handlers
@@ -181,12 +181,14 @@ type Site struct {
 	flight     singleflight.Group
 	sem        *semaphore.Weighted
 	log        *slog.Logger
+	diag       bool // 404 reasons and render errors in responses (HEARTH_DIAGNOSTICS=1)
+	hmr        bool // assets come from a Vite dev server
 	Counters   Counters
 }
 
 // New builds a Site from a bundle. Handlers are registered afterwards with Handle.
 func New(o Options) (*Site, error) {
-	if o.Bundle == nil || o.CacheDir == "" {
+	if o.CacheDir == "" {
 		return nil, errors.New("hearth: Bundle and CacheDir are required")
 	}
 	if o.DefaultLang == "" {
@@ -198,29 +200,74 @@ func New(o Options) (*Site, error) {
 	if o.RenderTimeout <= 0 {
 		o.RenderTimeout = 10 * time.Second
 	}
-	if o.CacheControl == "" {
-		o.CacheControl = "public, max-age=0, must-revalidate"
-		if o.Dev {
-			o.CacheControl = "no-store"
-		}
-	}
 	o.BaseURL = strings.TrimRight(o.BaseURL, "/")
-	o.DevAssetURL = strings.TrimRight(o.DevAssetURL, "/")
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
+	var envOv Overrides
+	if !o.IgnoreEnv {
+		var err error
+		if envOv, err = OverridesFromEnv(); err != nil {
+			return nil, err
+		}
+	}
+	if err := o.Overrides.validate(); err != nil {
+		return nil, err
+	}
+	ov := o.Overrides.over(envOv) // the environment wins over code
+	if args := envOv.active(); len(args) > 0 {
+		// Only the environment is announced: code that sets Overrides says so itself, but a stray
+		// variable on a production host must show up in the first log line.
+		o.Logger.Warn("hearth: overrides active", args...)
+	}
+	if ov.Bundle != "" {
+		st, err := os.Stat(ov.Bundle)
+		switch {
+		case err != nil:
+			return nil, fmt.Errorf("hearth: HEARTH_BUNDLE: %w", err)
+		case !st.IsDir():
+			return nil, fmt.Errorf("hearth: HEARTH_BUNDLE=%q is not a directory", ov.Bundle)
+		}
+		o.Bundle = os.DirFS(ov.Bundle)
+	}
+	if o.Bundle == nil {
+		return nil, errors.New("hearth: Bundle and CacheDir are required")
+	}
+	noCache := ov.Cache == "off"
+	diag := ov.Diagnostics == "1"
+	lenient, devBase := false, ""
+	switch a := ov.Assets; {
+	case a == "placeholder":
+		lenient = true
+	case strings.HasPrefix(a, "vite:"):
+		lenient, devBase = true, strings.TrimRight(strings.TrimPrefix(a, "vite:"), "/")
+	}
+	if ov.Templates == "request" && frozenBundle(o.Bundle) {
+		o.Logger.Warn("hearth: HEARTH_TEMPLATES=request has no effect on an embedded bundle; use os.DirFS on the source tree")
+	}
+	if o.CacheControl == "" {
+		o.CacheControl = "public, max-age=0, must-revalidate"
+		if noCache {
+			o.CacheControl = "no-store"
+		}
+	}
 	man, err := manifest.Load(o.Bundle, "manifest.json")
 	if err != nil {
-		if !(o.Dev || o.LenientAssets) || !errors.Is(err, fs.ErrNotExist) {
+		if !lenient || !errors.Is(err, fs.ErrNotExist) {
 			return nil, err
 		}
 		man = &manifest.Manifest{Format: manifest.BundleFormat, Assets: map[string]string{}, Entries: map[string]manifest.Entry{}, Images: map[string][]manifest.ImageFile{}}
+		// A source tree has no manifest, so the ssr list a build would have recorded comes from the config.
+		if man.SSR, err = configSSR(o.Bundle); err != nil {
+			return nil, err
+		}
 	}
-	if o.Dev || o.LenientAssets {
-		man.Lenient = true
-	}
-	if o.Dev && o.DevAssetURL != "" {
-		man.DevBase = o.DevAssetURL
+	var assets render.Assets = man
+	switch {
+	case devBase != "":
+		assets = manifest.Vite{M: man, Base: devBase}
+	case lenient:
+		assets = manifest.Placeholder{M: man}
 	}
 	routes, err := route.Discover(o.Bundle, "pages")
 	if err != nil {
@@ -260,16 +307,20 @@ func New(o Options) (*Site, error) {
 		}
 		ssr[pg.Pattern] = true
 	}
-	rend, err := render.New(render.Options{FS: o.Bundle, Routes: routes, Manifest: man, Catalogs: cats, Data: dataFS, Funcs: o.Funcs})
+	rend, err := render.New(render.Options{FS: o.Bundle, Routes: routes, Assets: assets, Catalogs: cats, Data: dataFS, Funcs: o.Funcs, Reparse: ov.Templates == "request"})
 	if err != nil {
 		return nil, err
 	}
-	pageCache, err := cache.New(o.CacheDir, o.TmpDir)
+	diskCache, err := cache.New(o.CacheDir, o.TmpDir)
 	if err != nil {
 		return nil, err
+	}
+	var pageCache cache.Store = diskCache
+	if noCache {
+		pageCache = cache.Nop{}
 	}
 	return &Site{opt: o, routes: routes, renderer: rend, cache: pageCache, urls: urls, handlers: map[string]Handler{}, ssr: ssr,
-		sem: semaphore.NewWeighted(int64(o.MaxConcurrent)), log: o.Logger}, nil
+		sem: semaphore.NewWeighted(int64(o.MaxConcurrent)), log: o.Logger, diag: diag, hmr: assets.HMR()}, nil
 }
 
 func newURLs(o Options, langs []string) (i18n.URLs, error) {
@@ -356,12 +407,41 @@ func (s *Site) Invalidate(paths ...string) error {
 }
 
 type rendered struct {
-	body      []byte
-	status    int
-	to        string
-	noindex   bool
-	note      string // why a 404 happened, shown in Dev
-	unmatched bool   // no page matched the request (Options.Fallback gets those)
+	body    []byte
+	status  int
+	to      string
+	noindex bool
+	note    string // why a 404 happened, shown with diagnostics on
+}
+
+// Matches reports whether Site answers r itself: a page or handler matches it, or it is one of the
+// built-in routes (/healthz, /robots.txt, the sitemaps), a trailing-slash redirect, or a method Site
+// refuses with 405. It is false for a GET or HEAD that no page claims (an unknown path, host or
+// language), which is the request to hand to something else: a mux that serves search.json, or the
+// Vite dev server. Site never serves or proxies those itself.
+func (s *Site) Matches(r *http.Request) bool {
+	switch r.URL.Path {
+	case "/healthz", "/robots.txt", "/sitemap.xml":
+		return true
+	}
+	if _, ok := sitemapPart(r.URL.Path); ok {
+		return true
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return true
+	}
+	_, urlPath, ok := s.urls.Resolve(r.Host, r.URL.Path)
+	if !ok {
+		return false
+	}
+	if _, err := cache.RelPath("", urlPath); err != nil {
+		return false
+	}
+	if strings.HasSuffix(r.URL.Path, "/") && r.URL.Path != "/" {
+		return true
+	}
+	_, _, ok = s.routes.Match(urlPath)
+	return ok
 }
 
 func (s *Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -389,12 +469,15 @@ func (s *Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.Counters.Errors.Add(1)
 		s.log.Error("render failed", "path", r.URL.Path, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		msg := "internal error"
+		if s.diag {
+			msg = "hearth: " + err.Error()
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
 	switch {
-	case res.unmatched && s.opt.Fallback != nil:
-		s.opt.Fallback.ServeHTTP(w, r)
 	case res.to != "":
 		s.Counters.Redirects.Add(1)
 		http.Redirect(w, r, res.to, res.status)
@@ -425,7 +508,7 @@ func (s *Site) writeError(w http.ResponseWriter, r *http.Request, res *rendered)
 		}
 	}
 	msg := http.StatusText(res.status)
-	if s.opt.Dev && res.note != "" {
+	if s.diag && res.note != "" {
 		msg = res.note
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -455,7 +538,7 @@ func (s *Site) errorBody(lang string, status int) (body []byte, found bool, err 
 	}
 	_, prefix := s.urls.Location(lang)
 	body, err = s.renderer.Render(pg, render.PageData{Lang: lang, Dir: dir, Params: map[string]string{}, Prefix: prefix,
-		Status: status, NoIndex: true, Dev: s.opt.Dev && s.opt.DevAssetURL != ""})
+		Status: status, NoIndex: true, HMR: s.hmr})
 	return body, err == nil, err
 }
 
@@ -464,23 +547,19 @@ func (s *Site) errorBody(lang string, status int) (body []byte, found bool, err 
 func (s *Site) resolve(r *http.Request) (*rendered, error) {
 	lang, urlPath, ok := s.urls.Resolve(r.Host, r.URL.Path)
 	if !ok {
-		return &rendered{status: http.StatusNotFound, unmatched: true}, nil
+		return &rendered{status: http.StatusNotFound}, nil
 	}
 	if _, err := cache.RelPath("", urlPath); err != nil {
-		return &rendered{status: http.StatusNotFound, unmatched: true}, nil
+		return &rendered{status: http.StatusNotFound}, nil
 	}
 	if strings.HasSuffix(r.URL.Path, "/") && r.URL.Path != "/" {
 		return &rendered{status: http.StatusMovedPermanently, to: strings.TrimRight(r.URL.Path, "/")}, nil
 	}
 	host, _ := s.urls.Location(lang)
 	cacheKey := r.URL.Path
-	if !s.opt.Dev {
-		if p, err := s.cache.Path(host, cacheKey); err == nil {
-			if b, err := os.ReadFile(p); err == nil {
-				s.Counters.Hits.Add(1)
-				return &rendered{body: b, status: http.StatusOK}, nil
-			}
-		}
+	if b, ok := s.cache.Get(host, cacheKey); ok {
+		s.Counters.Hits.Add(1)
+		return &rendered{body: b, status: http.StatusOK}, nil
 	}
 	key := host + "|" + cacheKey
 	v, err, _ := s.flight.Do(key, func() (any, error) { return s.render(r, lang, urlPath, host, cacheKey) })
@@ -493,7 +572,7 @@ func (s *Site) resolve(r *http.Request) (*rendered, error) {
 func (s *Site) render(r *http.Request, lang, urlPath, host, cacheKey string) (*rendered, error) {
 	pg, params, ok := s.routes.Match(urlPath)
 	if !ok {
-		return &rendered{status: http.StatusNotFound, unmatched: true}, nil
+		return &rendered{status: http.StatusNotFound}, nil
 	}
 	// Before anything reads data: an Invalidate after this point makes the write below skip.
 	gen, _ := s.cache.Gen(host, cacheKey)
@@ -534,13 +613,11 @@ func (s *Site) render(r *http.Request, lang, urlPath, host, cacheKey string) (*r
 	}
 	s.Counters.Renders.Add(1)
 	// Only 200s reach this point.
-	if !s.opt.Dev {
-		switch ok, err := s.cache.WriteGen(host, cacheKey, gen, body); {
-		case err != nil:
-			s.log.Error("cache write", "path", cacheKey, "err", err)
-		case !ok:
-			s.Counters.StaleSkips.Add(1) // invalidated mid-render: serve it, do not keep it
-		}
+	switch err := s.cache.Put(host, cacheKey, gen, body); {
+	case errors.Is(err, cache.ErrStale):
+		s.Counters.StaleSkips.Add(1) // invalidated mid-render: serve it, do not keep it
+	case err != nil:
+		s.log.Error("cache write", "path", cacheKey, "err", err)
 	}
 	return &rendered{body: body, status: http.StatusOK, noindex: meta.NoIndex}, nil
 }
@@ -557,7 +634,7 @@ func (s *Site) pageData(lang, neutral string, params map[string]string, data any
 	}
 	_, prefix := s.urls.Location(lang)
 	return render.PageData{Lang: lang, Dir: dir, Params: params, Data: data, Canonical: canonical, Status: http.StatusOK, NoIndex: meta.NoIndex,
-		Alternates: s.urls.Alternates(neutral), Prefix: prefix, Dev: s.opt.Dev && s.opt.DevAssetURL != ""}
+		Alternates: s.urls.Alternates(neutral), Prefix: prefix, HMR: s.hmr}
 }
 
 func (s *Site) write(w http.ResponseWriter, r *http.Request, status int, body []byte, noindex bool) {
@@ -685,4 +762,30 @@ func (s *Site) sitemap(w http.ResponseWriter, r *http.Request, part int) {
 		w.Header().Del("Content-Type")
 		http.NotFound(w, r)
 	}
+}
+
+// configSSR reads the "ssr" list from hearth.config.json at the bundle's root, the file `hearth build` copies
+// into the manifest. A bundle without one has no ssr pages. Only this key is read: the file is the CLI's.
+func configSSR(bundle fs.FS) ([]string, error) {
+	b, err := fs.ReadFile(bundle, "hearth.config.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var c struct {
+		SSR []string `json:"ssr"`
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, fmt.Errorf("hearth: hearth.config.json: %w", err)
+	}
+	return c.SSR, nil
+}
+
+// frozenBundle reports whether fsys is an embed.FS, whose files cannot change after the build, so
+// re-parsing them on every request shows no edit.
+func frozenBundle(fsys fs.FS) bool {
+	_, ok := fsys.(embed.FS)
+	return ok
 }

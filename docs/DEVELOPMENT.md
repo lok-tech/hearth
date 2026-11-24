@@ -106,7 +106,7 @@ The npm names are `@lok-tech/hearth` and `@lok-tech/cli-<os>-<cpu>` (`hearth` an
 - **`Options` field** (public): add it to `pkg/hearth.Options`, handle it in `New`, keep `doc.go` and PLAN's API
   sketch in step. Public types must use only stdlib types.
 - **Config option**: `internal/config` (field, default, validation, test), then map it into `hearth.Options` in
-  `build.newSite` **and** `dev.NewMock`, or the build and dev will differ from a server. The parity test builds with
+  `build.newSite` **and** `dev.NewMock`, or the build and dev will differ from a server. (There is no dev flag in `pkg/hearth`: a mode is an `Overrides` value, see [LAYERS.md](LAYERS.md).) The parity test builds with
   prefix and subdomain configs; extend it if your option changes output.
 - **Anything that changes a page's HTML**: change `Site.pageData` or the templates, never the build.
 - **CLI command**: `cmd/hearth/main.go` (usage text, flag set, exit codes 0/1/2) plus `main_test.go`; the logic lives

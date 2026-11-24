@@ -79,7 +79,7 @@ What the code says, so you do not have to guess:
 
 - The Go server reads exactly one manifest, `templates/manifest.json` inside the bundle (asset URLs, image
   variants, the `ssr` list, build id). `hearth build` also writes a copy at `dist/manifest.json`; nothing
-  loads that copy at runtime. A bundle without a manifest starts only in `Options.Dev`.
+  loads that copy at runtime. A bundle without a manifest starts only with `HEARTH_ASSETS=placeholder` or `vite:<url>` (a development setting).
 - The Go server needs no `dist/public`. It answers `/sitemap.xml`, `sitemap-N.xml` and `/robots.txt` itself;
   `hearth build` writes them into `dist/public` so a web server in front can serve them as files. If you serve
   the files, redeploy them with each release so they match the bundle.

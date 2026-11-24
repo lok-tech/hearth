@@ -259,21 +259,26 @@ func planPages(bundle fs.FS, cfg *config.Config) (*plan, error) {
 
 // newSite builds the Site that renders a plan. Its cache is a throwaway directory.
 func newSite(bundle fs.FS, cfg *config.Config, pl *plan, lenient bool) (*hearth.Site, func(), error) {
+	var ov hearth.Overrides
+	if lenient {
+		ov.Assets = "placeholder"
+	}
 	dir, err := os.MkdirTemp("", "hearth-build-")
 	if err != nil {
 		return nil, nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	site, err := hearth.New(hearth.Options{
-		Bundle:        bundle,
-		CacheDir:      dir,
-		BaseURL:       cfg.BaseURL,
-		DefaultLang:   cfg.DefaultLang,
-		I18n:          hearth.I18n{Mode: cfg.I18n.Mode, Hosts: cfg.I18n.Hosts},
-		LenientAssets: lenient,
-		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		SSR:           cfg.SSR,
-		Funcs:         mock.Stubs(cfg.Funcs),
+		Bundle:      bundle,
+		CacheDir:    dir,
+		BaseURL:     cfg.BaseURL,
+		DefaultLang: cfg.DefaultLang,
+		I18n:        hearth.I18n{Mode: cfg.I18n.Mode, Hosts: cfg.I18n.Hosts},
+		Overrides:   ov,
+		IgnoreEnv:   true, // the output of build and check must not depend on HEARTH_* variables
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SSR:         cfg.SSR,
+		Funcs:       mock.Stubs(cfg.Funcs),
 		SitemapURLs: func(context.Context) ([]hearth.SitemapEntry, error) {
 			out := make([]hearth.SitemapEntry, len(pl.entries)) // collection data carries no dates
 			for i, p := range pl.entries {

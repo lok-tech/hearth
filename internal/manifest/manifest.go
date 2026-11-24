@@ -27,11 +27,6 @@ type Manifest struct {
 	// SSR lists the parameterless pages (URL paths such as "/candidates") that a Go handler
 	// serves. The build does not prerender them; the server knows without reading the config.
 	SSR []string `json:"ssr,omitempty"`
-
-	// DevBase makes Asset return DevBase+"/"+name (Vite dev server). Lenient makes
-	// unknown assets and images resolve to placeholders (hearth check, no Vite build).
-	DevBase string `json:"-"`
-	Lenient bool   `json:"-"`
 }
 
 // Entry is one Vite entry resolved against the whole Vite manifest: the script (JS is empty for a
@@ -98,16 +93,13 @@ func (m *Manifest) PrefixURLs(base string) {
 	}
 }
 
+// HMR is false: a bundle manifest serves hashed files. Vite reports true.
+func (m *Manifest) HMR() bool { return false }
+
 // Asset resolves a logical asset name to its hashed URL; unknown names are an error.
 func (m *Manifest) Asset(name string) (string, error) {
-	if m.DevBase != "" {
-		return m.DevBase + "/" + name, nil
-	}
 	u, ok := m.Assets[name]
 	if !ok {
-		if m.Lenient {
-			return "/" + name, nil
-		}
 		return "", fmt.Errorf("hearth: asset %q not in manifest", name)
 	}
 	return u, nil
@@ -115,22 +107,18 @@ func (m *Manifest) Asset(name string) (string, error) {
 
 // Entry renders the tags that load a Vite entry: a stylesheet link per CSS file, a modulepreload
 // link per imported chunk and the module script. URLs come from the manifest and are escaped.
-// With a Vite dev server (DevBase) it emits the Vite client and the module script instead, as the
-// dev server serves and hot-reloads the CSS. Lenient mode resolves an unknown entry to a bare
-// script placeholder; otherwise an unknown entry is an error.
+// An unknown entry is an error.
 func (m *Manifest) Entry(name string) (template.HTML, error) {
-	esc := template.HTMLEscapeString
-	if m.DevBase != "" {
-		return template.HTML(fmt.Sprintf("<script type=\"module\" src=\"%s\"></script>\n<script type=\"module\" src=\"%s\"></script>",
-			esc(m.DevBase+"/@vite/client"), esc(m.DevBase+"/"+name))), nil
-	}
 	e, ok := m.Entries[name]
 	if !ok {
-		if m.Lenient {
-			return template.HTML(fmt.Sprintf("<script type=\"module\" src=\"%s\"></script>", esc("/"+name))), nil
-		}
 		return "", fmt.Errorf("hearth: entry %q not in manifest", name)
 	}
+	return entryTags(e), nil
+}
+
+// entryTags renders the tags of one known entry.
+func entryTags(e Entry) template.HTML {
+	esc := template.HTMLEscapeString
 	var b strings.Builder
 	for _, u := range e.CSS {
 		fmt.Fprintf(&b, "<link rel=\"stylesheet\" href=\"%s\">\n", esc(u))
@@ -141,7 +129,7 @@ func (m *Manifest) Entry(name string) (template.HTML, error) {
 	if e.JS != "" {
 		fmt.Fprintf(&b, "<script type=\"module\" src=\"%s\"></script>", esc(e.JS))
 	}
-	return template.HTML(strings.TrimRight(b.String(), "\n")), nil
+	return template.HTML(strings.TrimRight(b.String(), "\n"))
 }
 
 // formatGroup is every rendition of one image type (AVIF, WebP, the original format), narrowest first.
@@ -198,10 +186,10 @@ func (g formatGroup) srcset() string {
 
 func (g formatGroup) multi() bool { return len(g.files) > 1 }
 
-// lookup returns an image's groups; lenient and dev modes turn an unknown name into one placeholder file.
-func (m *Manifest) lookup(name string) ([]formatGroup, error) {
+// lookup returns an image's groups; with lenient set an unknown name becomes one placeholder file.
+func (m *Manifest) lookup(name string, lenient bool) ([]formatGroup, error) {
 	files, ok := m.Images[name]
-	if (!ok || len(files) == 0) && (m.Lenient || m.DevBase != "") {
+	if (!ok || len(files) == 0) && lenient {
 		files, ok = []ImageFile{{URL: "/" + name, Type: "image/*"}}, true
 	}
 	if !ok || len(files) == 0 {
@@ -256,7 +244,11 @@ func writeImg(b *strings.Builder, groups []formatGroup, alt, sizes string, lazy 
 // one width is a bare URL, exactly as before widths existed. Width/height are emitted to prevent
 // layout shift. lazy adds loading="lazy" decoding="async".
 func (m *Manifest) Picture(name, alt, sizes string, lazy bool) (template.HTML, error) {
-	groups, err := m.lookup(name)
+	return m.picture(false, name, alt, sizes, lazy)
+}
+
+func (m *Manifest) picture(lenient bool, name, alt, sizes string, lazy bool) (template.HTML, error) {
+	groups, err := m.lookup(name, lenient)
 	if err != nil {
 		return "", err
 	}
@@ -288,6 +280,10 @@ func validMedia(media string) error {
 // PictureSet renders a <picture> whose sources switch image by media query. Every art source emits one
 // <source media type srcset> per format; fallback supplies the format sources without media and the <img>.
 func (m *Manifest) PictureSet(alt, sizes string, art []ArtSource, fallback string, lazy bool) (template.HTML, error) {
+	return m.pictureSet(false, alt, sizes, art, fallback, lazy)
+}
+
+func (m *Manifest) pictureSet(lenient bool, alt, sizes string, art []ArtSource, fallback string, lazy bool) (template.HTML, error) {
 	var b strings.Builder
 	b.WriteString("<picture>")
 	for _, a := range art {
@@ -297,7 +293,7 @@ func (m *Manifest) PictureSet(alt, sizes string, art []ArtSource, fallback strin
 		if err := validMedia(a.Media); err != nil {
 			return "", err
 		}
-		groups, err := m.lookup(a.Name)
+		groups, err := m.lookup(a.Name, lenient)
 		if err != nil {
 			return "", err
 		}
@@ -305,7 +301,7 @@ func (m *Manifest) PictureSet(alt, sizes string, art []ArtSource, fallback strin
 			writeSource(&b, a.Media, g, sizes)
 		}
 	}
-	groups, err := m.lookup(fallback)
+	groups, err := m.lookup(fallback, lenient)
 	if err != nil {
 		return "", err
 	}
@@ -319,6 +315,10 @@ func (m *Manifest) PictureSet(alt, sizes string, art []ArtSource, fallback strin
 
 // PictureArgs is the template helper {{picture "name" "alt" ["sizes"] ["eager"]}}.
 func (m *Manifest) PictureArgs(args ...string) (template.HTML, error) {
+	return m.pictureArgs(false, args)
+}
+
+func (m *Manifest) pictureArgs(lenient bool, args []string) (template.HTML, error) {
 	lazy := true
 	if n := len(args); n >= 3 && args[n-1] == "eager" {
 		lazy = false
@@ -334,12 +334,16 @@ func (m *Manifest) PictureArgs(args ...string) (template.HTML, error) {
 		}
 		sizes = args[2]
 	}
-	return m.Picture(args[0], args[1], sizes, lazy)
+	return m.picture(lenient, args[0], args[1], sizes, lazy)
 }
 
 // PictureSetArgs is the template helper
 // {{pictureSet "alt" "sizes" "(media)" "name" ... "" "fallback" ["eager"]}}.
 func (m *Manifest) PictureSetArgs(args ...string) (template.HTML, error) {
+	return m.pictureSetArgs(false, args)
+}
+
+func (m *Manifest) pictureSetArgs(lenient bool, args []string) (template.HTML, error) {
 	if len(args) < 2 {
 		return "", fmt.Errorf(`hearth: pictureSet: want "alt" "sizes" then "media" "name" pairs, got %d arguments`, len(args))
 	}
@@ -363,5 +367,5 @@ func (m *Manifest) PictureSetArgs(args ...string) (template.HTML, error) {
 	if last.Media != "" {
 		return "", fmt.Errorf(`hearth: pictureSet: the last pair must be the fallback with an empty media ("" %q)`, last.Name)
 	}
-	return m.PictureSet(alt, sizes, art[:len(art)-1], last.Name, lazy)
+	return m.pictureSet(lenient, alt, sizes, art[:len(art)-1], last.Name, lazy)
 }

@@ -254,7 +254,7 @@ func TestEntryHelperInASite(t *testing.T) {
 	}
 
 	// lenient (hearth check): placeholder
-	s, err = New(Options{Bundle: entryBundle(""), CacheDir: t.TempDir(), LenientAssets: true, Logger: logger})
+	s, err = New(Options{Bundle: entryBundle(""), CacheDir: t.TempDir(), Overrides: Overrides{Assets: "placeholder"}, IgnoreEnv: true, Logger: logger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestEntryHelperInASite(t *testing.T) {
 	}
 
 	// dev server: the Vite client and the module script
-	s, err = New(Options{Bundle: entryBundle(""), CacheDir: t.TempDir(), Dev: true, DevAssetURL: "http://localhost:5173/", Logger: logger})
+	s, err = New(Options{Bundle: entryBundle(""), CacheDir: t.TempDir(), Overrides: Overrides{Assets: "vite:http://localhost:5173/"}, IgnoreEnv: true, Logger: logger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestPictureHelpersInASite(t *testing.T) {
 		t.Errorf("missing image = %d, want 500", w.Code)
 	}
 	// lenient (hearth check): placeholders
-	s, _ = New(Options{Bundle: bundle(""), CacheDir: t.TempDir(), LenientAssets: true, Logger: logger})
+	s, _ = New(Options{Bundle: bundle(""), CacheDir: t.TempDir(), Overrides: Overrides{Assets: "placeholder"}, IgnoreEnv: true, Logger: logger})
 	if w := get(s, "/"); w.Code != 200 || !strings.Contains(w.Body.String(), `<img src="/hero" alt="Hero"`) {
 		t.Errorf("lenient: %d %s", w.Code, w.Body.String())
 	}

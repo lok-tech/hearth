@@ -53,6 +53,9 @@
     "@lok-tech/cli-win32-arm64": "0.2.0",
     "@lok-tech/cli-win32-x64": "0.2.0"
   },
+  "devDependencies": {
+    "vite": "^6.4.6"
+  },
   "scripts": {
     "test": "node --test test/*.test.js"
   }

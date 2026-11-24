@@ -157,7 +157,7 @@ func TestPictureHelpersInTemplates(t *testing.T) {
 		"dark":  {{URL: "/d.webp", Type: "image/webp", Width: 4, Height: 4}, {URL: "/d.png", Type: "image/png", Width: 4, Height: 4}},
 		"light": {{URL: "/l.webp", Type: "image/webp", Width: 4, Height: 4}, {URL: "/l.png", Type: "image/png", Width: 4, Height: 4}},
 	}}
-	r, err := New(Options{FS: fsys, Routes: routes, Manifest: m})
+	r, err := New(Options{FS: fsys, Routes: routes, Assets: m})
 	if err != nil {
 		t.Fatal(err)
 	}

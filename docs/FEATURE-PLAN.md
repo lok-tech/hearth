@@ -1,5 +1,9 @@
 # Plan: support voters.co.il (blockers and gaps)
 
+> **Historical.** This plan was written before the layers refactor ([LAYERS.md](LAYERS.md)). `Options.Dev`,
+> `DevAssetURL`, `LenientAssets`, `Options.Fallback` and the `.Dev` template variable named below were removed:
+> use `Options.Overrides` / the `HEARTH_*` variables, `Site.Matches` and `.HMR`.
+
 Source: an agent's read-through of the Hearth docs and code against the voters.co.il Astro site
 (2026-11-19). It found 2 blockers and 9 smaller gaps. Nothing was run against the site. This plan
 turns each item into a design, the code it touches, and a test that proves it. Items 1 to 3 are the
@@ -97,7 +101,7 @@ number formats (`toLocaleString('he-IL')`, `toFixed(2)`), Hebrew sorting, arithm
      `site.Prerender(ctx, paths, n)` then `site.Export(dir)` (both exist). Provide one tested helper,
      `hearth.Build(ctx, site, outDir)`, so the voters binary gets a `web build` subcommand without
      copying the CLI's logic. That keeps "one engine".
-   - Dev for these sites uses `hearth dev -live` (proxy to the Go server with `Options.Dev`).
+   - Dev for these sites uses `hearth dev -live` (proxy to the Go server started with `HEARTH_ENV=dev`).
 6. Ship no formatting helpers in the core (no `x/text` dependency). voters writes `num`, `dec` and the
    Hebrew-collated sort in its own module. Sorting belongs in the handler, not the template.
 
@@ -120,7 +124,7 @@ directory in host modes. The Hebrew path through real Caddy is still unverified.
   routes (the route table skips them).
 - `Site` renders them for an `ErrNotFound` or `ErrGone` outcome and for an unmatched path inside a known
   language, with the right status. Plain text stays as the fallback when the template is absent.
-  `Options.Fallback` still wins for unmatched paths. 404 and 410 bodies are **never cached** (only 200s
+  A mux or `hearth dev` takes unmatched paths first (`Site.Matches`). 404 and 410 bodies are **never cached** (only 200s
   are, as designed).
 - `hearth build` writes the rendered 404 as `dist/public/404.html` (and per-host copies in host i18n
   modes) so Caddy's `handle_errors` / `not_found: 404.html` points at a real file. Add the same to the
@@ -171,8 +175,8 @@ CSS lose it, there are no `modulepreload` hints, and every page hand-writes
 3. New helper `{{entry "src/site.ts"}}` returns `template.HTML`: one `<link rel="stylesheet">` per CSS
    file, one `<link rel="modulepreload">` per imported chunk, one `<script type="module">`. All URLs come
    from the manifest and are escaped; `assetBase` is prefixed as for assets.
-4. `Dev` mode: emit the Vite client and the module script instead, as the layout does today.
-5. Lenient mode (`hearth check`) resolves unknown entries to placeholders, as `asset` does.
+4. Vite assets (`HEARTH_ASSETS=vite:<url>`): emit the Vite client and the module script instead, as the layout does today.
+5. The placeholder resolver (`hearth check`) resolves unknown entries to placeholders, as `asset` does.
 6. The layout takes the entry through a block, so `site.css` on the layout and `game.css` on the game
    entry both work without a rule about one CSS file per entry.
 
@@ -234,7 +238,7 @@ These are not Hearth changes; listed so nothing is lost.
   - `url_redirects` lookup lives in the `/candidates/{id}` handler and calls `hearth.Redirect(301, to)`
     after validating the target. Never prerender a database-backed route (no `collections` entry for
     it), or the prebuilt file shadows the redirect.
-  - `search.json`: serve from the voters mux in front of `Site`, or as `Options.Fallback`.
+  - `search.json`: serve from the voters mux in front of `Site`, or behind `Site.Matches`.
 - Order of the port, after Phases 1 and 2: layout and `/candidates/{id}` first as the pilot, with a
   parity check against the current Astro HTML (diff of `<title>`, description, canonical, JSON-LD,
   headings and visible text), then the five `ssr` pages, then the rest.

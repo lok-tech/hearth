@@ -316,15 +316,21 @@ func TestGuideSearchMux(t *testing.T) {
 		t.Errorf("site behind the mux: %d", w.Code)
 	}
 
-	// the same file as Options.Fallback: it only sees paths that match no page
-	fb, err := hearth.New(hearth.Options{
+	// the same file behind Site.Matches: it only sees paths that match no page
+	inner, err := hearth.New(hearth.Options{
 		Bundle: pilotBundle(), CacheDir: t.TempDir(), DefaultLang: "he", Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Funcs:    template.FuncMap{"num": num, "dec": dec, "trend": trend},
-		Fallback: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `[]`) }),
+		Funcs: template.FuncMap{"num": num, "dec": dec, "trend": trend},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	fb := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !inner.Matches(r) {
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
 	if w := serve(fb, "/search.json"); w.Code != 200 || w.Body.String() != "[]" {
 		t.Errorf("fallback: %d %q", w.Code, w.Body)
 	}

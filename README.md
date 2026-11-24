@@ -204,7 +204,7 @@ A handler returns `(data, meta, err)`; the error decides the response:
 
 A 404 or 410 renders `pages/404.html` / `pages/410.html` inside your layout when they exist (`.Status` is 404 or
 410; `404.he.html` overrides per language), `noindex` and never cached; otherwise the body is plain text. The
-same goes for a path that matches no page in a known language (`Options.Fallback` still wins there). They are
+same goes for a path that matches no page in a known language (your own mux in front of `Site`, or `hearth dev`, gets it first when `Site.Matches` says no page claims it). They are
 templates, not routes: no sitemap entry, no prerender. `hearth build` writes the rendered 404 as
 `dist/public/404.html` (plus `<lang>/404.html` in prefix mode, `<host>/404.html` in host modes) for the web server.
 
@@ -252,13 +252,44 @@ A complete Postgres-backed server with HTTP-level tests is in [`example/`](examp
 | `hearth init [-name N] [DIR]` | write the Vite starter |
 | `hearth check` | validate and trial-render every page in every language, listing all problems |
 | `hearth build` | Vite, prerender, `dist/public` + `dist/templates` + `dist/manifest.json` |
-| `hearth dev` | pages rendered from source with `*.mock.json` data; `dev.proxy` forwards backend paths; `-live` proxies your Go server |
+| `hearth dev` | for sites without a Go server: pages rendered from source with `*.mock.json` data; `dev.proxy` forwards backend paths; `-live` proxies a running server |
 | `hearth preview` | the production flow locally: file if it exists, otherwise your Go server |
+
+### Developing a site that has a Go server
+
+Run your own server and put Vite in front of it with the `hearthDev()` plugin; there is no second binary and no
+dev branch in your code. The server is the same in development and production, and `HEARTH_*` variables change
+how its layers behave (the environment always wins over code):
+
+```sh
+HEARTH_ENV=dev HEARTH_BUNDLE=. HEARTH_ASSETS=vite:http://localhost:5173 go run ./cmd/server   # your server
+npx vite                                                                      # with hearthDev() in vite.config
+```
+
+| Variable | Values | Effect |
+|---|---|---|
+| `HEARTH_TEMPLATES` | `once` (default), `request` | `request` re-reads and re-parses the templates on every request, so an edit shows on the next one (needs `os.DirFS`, not `embed`) |
+| `HEARTH_CACHE` | `disk` (default), `off` | `off` renders every request, keeps nothing, sends `no-store` |
+| `HEARTH_ASSETS` | `manifest` (default), `placeholder`, `vite:<url>` | where `{{asset}}`, `{{entry}}` and images come from |
+| `HEARTH_DIAGNOSTICS` | `0` (default), `1` | the reason for a 404 and the message of a failed render appear in the response |
+| `HEARTH_BUNDLE` | a directory | read the templates from it instead of `Options.Bundle`: `.` is the site's source tree, so edits show; with no `manifest.json` there, the `ssr` list comes from its `hearth.config.json` |
+| `HEARTH_ENV` | `dev` | preset for `request` + `off` + diagnostics; the variables above win over it |
+
+An invalid value makes `hearth.New` fail naming it; other `HEARTH_*` names (such as `HEARTH_CACHE_DIR`) are left alone.
+When the environment changes anything, `New` logs one `overrides active` line, so a stray variable on a production
+host is visible. `hearth build` and `hearth check` ignore these variables. In code, `Options.Overrides` takes the
+same values; the environment wins. `Site.Matches(r)` is false for a GET no page claims, for a mux that serves
+something else (such as `search.json`).
+
+`hearthDev()` (`@lok-tech/hearth/vite`) reloads the browser when a template, locale or data file changes, sends `dev.proxy`
+prefixes to their backends and every other request Vite did not answer to your server (`dev.server`). It does not
+start your server. See [npm/hearth/README.md](npm/hearth/README.md) and [docs/LAYERS.md](docs/LAYERS.md).
 
 ### Calling a backend from `hearth dev`
 
-`hearth dev` renders pages from mock data, so calls to your real backend (`/api`, uploads, short links) have
-nowhere to go. List them in `hearth.config.json`:
+`hearth dev` (a site with no Go server) renders pages from mock data, so calls to your real backend (`/api`,
+uploads, short links) have nowhere to go. List them in `hearth.config.json`; the `hearthDev()` plugin reads the
+same `dev.proxy`:
 
 ```json
 { "dev": { "proxy": { "/api": "http://localhost:8080", "/uploads": "http://localhost:8080/files" } } }

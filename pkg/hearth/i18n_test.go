@@ -208,12 +208,11 @@ func TestPrerenderReportsRenderErrorsAndBadPaths(t *testing.T) {
 
 func TestFallbackGetsUnmatchedRequestsOnly(t *testing.T) {
 	var got []string
-	s, _ := newI18nSite(t, func(o *Options) {
-		o.Fallback = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			got = append(got, r.URL.Path)
-			w.Write([]byte("fallback"))
-		})
-	})
+	site, _ := newI18nSite(t, nil)
+	s := withFallback(site, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.Path)
+		w.Write([]byte("fallback"))
+	}))
 	if w := get(s, "/src/entry.ts"); w.Body.String() != "fallback" {
 		t.Errorf("unmatched: %q", w.Body)
 	}
@@ -228,13 +227,14 @@ func TestFallbackGetsUnmatchedRequestsOnly(t *testing.T) {
 	}
 }
 
-func TestDevModeNeedsNoManifestAndNeverCaches(t *testing.T) {
+func TestViteAssetsNeedNoManifestAndCacheOffNeverCaches(t *testing.T) {
 	b := i18nBundle()
 	delete(b, "manifest.json")
-	b["layouts/base.html"] = &fstest.MapFile{Data: []byte(`{{if .Dev}}DEV {{asset "src/entry.ts"}}{{end}}{{block "body" .}}{{end}}`)}
+	b["layouts/base.html"] = &fstest.MapFile{Data: []byte(`{{if .HMR}}DEV {{asset "src/entry.ts"}}{{end}}{{block "body" .}}{{end}}`)}
 	dir := t.TempDir()
-	s, err := New(Options{Bundle: b, CacheDir: dir, Dev: true, DevAssetURL: "http://localhost:5173/",
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	s, err := New(Options{Bundle: b, CacheDir: dir, IgnoreEnv: true,
+		Overrides: Overrides{Cache: "off", Assets: "vite:http://localhost:5173/"},
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,14 +248,14 @@ func TestDevModeNeedsNoManifestAndNeverCaches(t *testing.T) {
 	if files := cachedFiles(t, dir); len(files) != 0 {
 		t.Errorf("dev wrote cache files: %v", files)
 	}
-	// without Dev a missing manifest is an error
+	// with the bundle's own manifest a missing one is an error
 	if _, err := New(Options{Bundle: b, CacheDir: t.TempDir()}); err == nil {
-		t.Error("missing manifest must fail outside Dev")
+		t.Error("a missing manifest must fail by default")
 	}
 }
 
-func TestDevModeExplainsAMissingPage(t *testing.T) {
-	s, _ := newI18nSite(t, func(o *Options) { o.Dev = true })
+func TestDiagnosticsExplainAMissingPage(t *testing.T) {
+	s, _ := newI18nSite(t, func(o *Options) { o.Overrides = Overrides{Diagnostics: "1"}; o.IgnoreEnv = true })
 	if err := s.Handle("post/{id}", func(r *http.Request, p map[string]string) (any, Meta, error) {
 		return nil, Meta{}, errorsJoin(ErrNotFound, "no mock data for "+r.URL.Path)
 	}); err != nil {

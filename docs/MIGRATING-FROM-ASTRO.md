@@ -344,9 +344,10 @@ rep, err := hearth.Build(ctx, site, "dist/public")
   skips `ssr` pages. It also prerenders every path `Options.SitemapURLs` returns, so give the build's `Site` no
   `SitemapURLs`; the running server (which has it) answers `/sitemap.xml` itself. Otherwise 10,000 database pages
   become static files that shadow your handlers and never refresh.
-- Development: `hearth dev` renders from `*.mock.json` and fails loudly on a func stub. For real data use
-  `hearth dev -live`, which proxies to your Go server (started with `Options.Dev`); a func that fails there fails
-  the page, as in production.
+- Development: with a Go server, run it with `HEARTH_ENV=dev HEARTH_BUNDLE=. HEARTH_ASSETS=vite:<vite url>` and put Vite in
+  front with the `hearthDev()` plugin; funcs and handlers are your real ones, and a func that fails fails the page,
+  as in production. `hearth dev` (mock data, fails loudly on a func stub) is for a site with no Go server;
+  `hearth dev -live` proxies to a running one.
 - `hearth preview` runs the production flow locally: a file if it exists, otherwise your Go server.
 - `hearth dev` renders from mock data, so a client that calls your backend needs `dev.proxy`
   (`{"dev":{"proxy":{"/api":"http://localhost:8080"}}}`): requests under `/api` go to that URL first, before page
@@ -414,13 +415,22 @@ first, then the cache; see [DEPLOY.md](DEPLOY.md).)
 ## 13. `search.json`
 
 voters has a `search.json` endpoint. It is not a page; serve it from your own mux in front of the Site (the
-pattern in the test), or as `Options.Fallback`, which only sees paths that match no page:
+pattern in the test), or in a small wrapper that uses `Site.Matches` to see only paths no page claims:
 
 ```go
 mux := http.NewServeMux()
 mux.HandleFunc("GET /search.json", searchJSON) // your handler: Content-Type, Cache-Control, encoding/json
 mux.Handle("/", site)                          // everything else is Hearth's
 http.ListenAndServe(":8080", mux)
+
+// or: hand over only what no page claims
+http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	if !site.Matches(r) {
+		searchJSON(w, r)
+		return
+	}
+	site.ServeHTTP(w, r)
+}))
 ```
 
 If Caddy serves static files first, add a `handle /search.json` that goes to the Go server (it is not a file).
@@ -549,7 +559,7 @@ for k in a:
 
 Verified by tests in this repository: every Go snippet above (`pkg/hearth/migrating_test.go`: formatters, trend
 output, handler outcomes 200/301/404/410, noindex meta and header, `{{entry}}`, the data block and attributes,
-sitemap `lastmod`, `search.json` through a mux and through `Options.Fallback`, `hearth.Build` writing `404.html`
+sitemap `lastmod`, `search.json` through a mux and through `Site.Matches`, `hearth.Build` writing `404.html`
 and no file for `ssr` pages or database rows); `json` in attributes and scripts (`internal/render/jsonattr_test.go`);
 the `/?t=` script under Node; `hearth check`'s `envPrefix` warning, `dev.proxy` (in-process, in-memory backends) and `Site.WarmSitemap` (`internal/build/check_test.go`, `internal/dev/proxy_test.go`, `pkg/hearth/warm_test.go`).
 

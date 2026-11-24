@@ -26,7 +26,7 @@ func TestWatchServesPagesAndBuiltAssetsOnOnePort(t *testing.T) {
 		t.Skip("needs /bin/sh")
 	}
 	f := testutil.BaseSite()
-	f["pages/styled.html"] = `{{define "body"}}<link rel="stylesheet" href="{{asset "src/entry.ts.css"}}"><script type="module" src="{{asset "src/entry.ts"}}"></script>{{if .Dev}}VITE-CLIENT{{end}}{{end}}`
+	f["pages/styled.html"] = `{{define "body"}}<link rel="stylesheet" href="{{asset "src/entry.ts.css"}}"><script type="module" src="{{asset "src/entry.ts"}}"></script>{{if .HMR}}VITE-CLIENT{{end}}{{end}}`
 	f["pages/entried.html"] = `{{define "body"}}{{entry "src/entry.ts"}}{{end}}`
 	f["public/robots-dev.txt"] = "public file"
 	site := testutil.WriteSite(t, f)

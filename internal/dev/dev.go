@@ -117,6 +117,12 @@ func newMock(siteDir string, cfg *config.Config, wa *watcher) (http.Handler, err
 		return nil, err
 	}
 	src := os.DirFS(siteDir)
+	// What `Dev: true` used to bundle: nothing cached, a missing manifest and unknown assets tolerated
+	// (a Vite dev server, or the watch build's manifest, serves them), reasons shown for a 404.
+	ov := hearth.Overrides{Cache: "off", Diagnostics: "1", Assets: "placeholder"}
+	if devBase != "" {
+		ov.Assets = "vite:" + devBase
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var bundle fs.FS = src
 		if wa != nil {
@@ -128,17 +134,18 @@ func newMock(siteDir string, cfg *config.Config, wa *watcher) (http.Handler, err
 			BaseURL:     cfg.BaseURL,
 			DefaultLang: cfg.DefaultLang,
 			I18n:        hearth.I18n{Mode: cfg.I18n.Mode, Hosts: cfg.I18n.Hosts},
-			Dev:         true,
-			DevAssetURL: devBase,
+			Overrides:   ov,
+			IgnoreEnv:   true,
 			SSR:         cfg.SSR,
 			Funcs:       mock.Stubs(cfg.Funcs),
 			Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 		}
+		var fallback http.Handler // answers what no page claims
 		if vite != nil {
-			opt.Fallback = vite
+			fallback = vite
 		}
 		if wa != nil {
-			opt.Fallback = wa.static()
+			fallback = wa.static()
 		}
 		site, err := hearth.New(opt)
 		if err != nil {
@@ -161,6 +168,10 @@ func newMock(siteDir string, cfg *config.Config, wa *watcher) (http.Handler, err
 					return
 				}
 			}
+		}
+		if fallback != nil && !site.Matches(r) {
+			fallback.ServeHTTP(w, r)
+			return
 		}
 		site.ServeHTTP(w, r)
 	}), nil

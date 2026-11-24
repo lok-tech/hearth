@@ -166,10 +166,20 @@ func TestOnlyA410TemplateStillFallsBackFor404(t *testing.T) {
 	}
 }
 
-func TestFallbackWinsForUnmatchedPaths(t *testing.T) {
-	s, _ := newErrSite(t, errBundle(), func(o *Options) {
-		o.Fallback = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("vite")) })
+// withFallback is what a server (or `hearth dev`) puts in front of a Site: whatever no page claims goes to h.
+func withFallback(s *Site, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.Matches(r) {
+			h.ServeHTTP(w, r)
+			return
+		}
+		s.ServeHTTP(w, r)
 	})
+}
+
+func TestFallbackWinsForUnmatchedPaths(t *testing.T) {
+	site, _ := newErrSite(t, errBundle(), nil)
+	s := withFallback(site, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("vite")) }))
 	if w := get(s, "/nope.js"); w.Body.String() != "vite" {
 		t.Errorf("unmatched path: %d %q", w.Code, w.Body)
 	}

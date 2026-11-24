@@ -119,23 +119,22 @@ func TestEntryAssetBase(t *testing.T) {
 }
 
 func TestEntryDevAndLenient(t *testing.T) {
-	m := entryManifest()
-	m.DevBase = "http://localhost:5173"
-	got, err := m.Entry("src/site.ts")
+	v := Vite{M: entryManifest(), Base: "http://localhost:5173"}
+	got, err := v.Entry("src/site.ts")
 	want := `<script type="module" src="http://localhost:5173/@vite/client"></script>
 <script type="module" src="http://localhost:5173/src/site.ts"></script>`
 	if err != nil || string(got) != want {
 		t.Errorf("dev: %q %v", got, err)
 	}
-	if got, err := m.Entry("src/unknown.ts"); err != nil || !strings.Contains(string(got), "5173/src/unknown.ts") {
+	if got, err := v.Entry("src/unknown.ts"); err != nil || !strings.Contains(string(got), "5173/src/unknown.ts") {
 		t.Errorf("dev serves any entry: %q %v", got, err)
 	}
-	l := &Manifest{Lenient: true}
+	l := Placeholder{M: &Manifest{}}
 	if got, err := l.Entry("src/site.ts"); err != nil || string(got) != `<script type="module" src="/src/site.ts"></script>` {
 		t.Errorf("lenient: %q %v", got, err)
 	}
 	// a known entry still renders fully in lenient mode
-	l.Entries = entryManifest().Entries
+	l = Placeholder{M: entryManifest()}
 	if got, _ := l.Entry("src/site.ts"); !strings.Contains(string(got), "modulepreload") {
 		t.Errorf("lenient known entry: %s", got)
 	}
@@ -264,8 +263,7 @@ func TestPictureEagerAndArgCounts(t *testing.T) {
 	if _, err := imgs().PictureArgs("nope", "a"); err == nil || !strings.Contains(err.Error(), `"nope"`) {
 		t.Errorf("missing image: %v", err)
 	}
-	l := imgs()
-	l.Lenient = true
+	l := Placeholder{M: imgs()}
 	if got, err := l.PictureArgs("nope", "a"); err != nil || !strings.Contains(string(got), `src="/nope"`) || strings.Contains(string(got), "<source") {
 		t.Errorf("lenient placeholder: %s %v", got, err)
 	}
@@ -335,8 +333,7 @@ func TestPictureSetErrorsAndMediaEscaping(t *testing.T) {
 		t.Errorf("media not escaped: %s %v", got, err)
 	}
 	// lenient: missing names become placeholders
-	l := imgs()
-	l.Lenient = true
+	l := Placeholder{M: imgs()}
 	if got, err := l.PictureSetArgs("a", "", "(m)", "nope", "", "nope2"); err != nil || !strings.Contains(string(got), `<source media="(m)" srcset="/nope">`) || !strings.Contains(string(got), `src="/nope2"`) {
 		t.Errorf("lenient: %s %v", got, err)
 	}
@@ -350,5 +347,27 @@ func TestSeveralRenditionsNeedWidths(t *testing.T) {
 	m := &Manifest{Images: map[string][]ImageFile{"x": {{URL: "/a.jpg", Type: "image/jpeg"}, {URL: "/b.jpg", Type: "image/jpeg"}}}}
 	if _, err := m.Picture("x", "a", "", true); err == nil {
 		t.Error("renditions without widths must fail")
+	}
+}
+
+func TestResolversShareTheRenderAssetsShape(t *testing.T) {
+	m := entryManifest()
+	m.Assets = map[string]string{"a.css": "/assets/a-1.css"}
+	if _, err := m.Asset("nope"); err == nil {
+		t.Error("the manifest must reject an unknown asset")
+	}
+	p := Placeholder{M: m}
+	if u, _ := p.Asset("a.css"); u != "/assets/a-1.css" {
+		t.Errorf("placeholder must keep a known asset, got %q", u)
+	}
+	if u, err := p.Asset("nope.css"); err != nil || u != "/nope.css" {
+		t.Errorf("placeholder unknown = %q, %v", u, err)
+	}
+	v := Vite{M: m, Base: "http://localhost:5173"}
+	if u, _ := v.Asset("a.css"); u != "http://localhost:5173/a.css" {
+		t.Errorf("vite asset = %q", u)
+	}
+	if m.HMR() || p.HMR() || !v.HMR() {
+		t.Errorf("HMR: manifest %v placeholder %v vite %v", m.HMR(), p.HMR(), v.HMR())
 	}
 }

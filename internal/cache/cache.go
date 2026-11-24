@@ -252,3 +252,53 @@ func (c *Cache) write(host, urlPath string, body []byte, check bool, gen uint64)
 	}
 	return true, nil
 }
+
+// ErrStale is what Store.Put returns when the page was invalidated since its generation was read:
+// the render is served but not kept.
+var ErrStale = errors.New("hearth: page invalidated while rendering")
+
+// Store is where rendered pages are kept. *Cache (plain files, the directory a web server serves)
+// is the production store; Nop keeps nothing.
+type Store interface {
+	// Get returns a kept page.
+	Get(host, urlPath string) ([]byte, bool)
+	// Gen returns the page's invalidation generation. Take it before reading the data a page is
+	// rendered from and hand it to Put.
+	Gen(host, urlPath string) (uint64, error)
+	// Put keeps a page unless it was invalidated since gen was read (then it returns ErrStale).
+	Put(host, urlPath string, gen uint64, body []byte) error
+	// Invalidate drops one page.
+	Invalidate(host, urlPath string) error
+	// Root is the directory holding the pages, "" for a store that keeps none.
+	Root() string
+}
+
+// Get returns the page file's content.
+func (c *Cache) Get(host, urlPath string) ([]byte, bool) {
+	p, err := c.Path(host, urlPath)
+	if err != nil {
+		return nil, false
+	}
+	b, err := os.ReadFile(p)
+	return b, err == nil
+}
+
+// Put is WriteGen that reports a skipped write as ErrStale.
+func (c *Cache) Put(host, urlPath string, gen uint64, body []byte) error {
+	ok, err := c.WriteGen(host, urlPath, gen, body)
+	if err == nil && !ok {
+		return ErrStale
+	}
+	return err
+}
+
+// Nop is a Store that keeps nothing: every Get misses and every Put is dropped.
+type Nop struct{}
+
+func (Nop) Get(string, string) ([]byte, bool)        { return nil, false }
+func (Nop) Gen(string, string) (uint64, error)       { return 0, nil }
+func (Nop) Put(string, string, uint64, []byte) error { return nil }
+func (Nop) Invalidate(string, string) error          { return nil }
+
+// Root is "": there is no directory to export.
+func (Nop) Root() string { return "" }
