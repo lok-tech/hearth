@@ -23,6 +23,9 @@ import (
 // Any page that does not answer 200 fails the build; the error names the first and counts the rest.
 // The prerendered files stay in the site's active cache version too.
 func Build(ctx context.Context, s *Site, outDir string) (PrerenderReport, error) {
+	if !s.keepsPages() { // fail before rendering every page for nothing
+		return PrerenderReport{}, errCacheOff
+	}
 	paths := map[string]bool{}
 	for _, pat := range s.routes.Patterns() {
 		if pg, _ := s.routes.Lookup(pat); !pg.IsDynamic() && !s.ssr[pg.Pattern] {

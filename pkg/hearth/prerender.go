@@ -15,6 +15,12 @@ import (
 	"github.com/lok-tech/hearth/internal/fsutil"
 )
 
+// errCacheOff is what Export and Build say when the page cache is off (HEARTH_CACHE=off): there is nothing to copy.
+var errCacheOff = errors.New("hearth: the page cache is off (HEARTH_CACHE=off): there are no pages to export")
+
+// keepsPages reports whether rendered pages are kept (the disk store), as opposed to the off store.
+func (s *Site) keepsPages() bool { return s.cache.Root() != "" }
+
 // PrerenderFailure is one page that did not render.
 type PrerenderFailure struct {
 	Path   string // language-neutral path, e.g. "/post/42"
@@ -117,8 +123,8 @@ func (s *Site) Prerender(ctx context.Context, paths []string, concurrency int) P
 // (<host>/<path>/index.html), so it can be deployed to any static host. Files are written
 // atomically; existing files in dst are overwritten and others are left alone.
 func (s *Site) Export(dst string) error {
-	if s.cache.Root() == "" {
-		return errors.New("hearth: the page cache is off (HEARTH_CACHE=off): there are no pages to export")
+	if !s.keepsPages() {
+		return errCacheOff
 	}
 	src := os.DirFS(s.cache.Root())
 	return fs.WalkDir(src, ".", func(p string, d fs.DirEntry, err error) error {

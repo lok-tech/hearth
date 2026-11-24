@@ -29,7 +29,13 @@ func (d *discardWriter) WriteHeader(c int)           { d.code = c }
 // them through the site's own handler, so it uses exactly the production path
 // (singleflight, concurrency limit, only 200s written). concurrency bounds
 // parallel requests on top of the render limit.
+//
+// With the page cache off (HEARTH_CACHE=off) nothing would be kept, so Warm does nothing and reports no pages.
 func (s *Site) Warm(ctx context.Context, paths []string, concurrency int) WarmReport {
+	if !s.keepsPages() {
+		s.log.Debug("hearth: warm skipped, the page cache is off")
+		return WarmReport{Failed: map[string]int{}}
+	}
 	if concurrency <= 0 {
 		concurrency = 4
 	}
@@ -119,7 +125,15 @@ func (s *Site) WarmPaths(ctx context.Context) ([]string, error) {
 // running is not cached, so an Invalidate during the warm cannot be undone by it. A large site costs real time and data source load;
 // the cache is already useful while the warm runs. An error from SitemapURLs/SitemapEntries is returned
 // with an empty report.
+//
+// With the page cache off (HEARTH_CACHE=off) it returns an empty report at once, without rendering or
+// calling SitemapURLs: warming exists to fill the cache, and nothing would be kept. The same line of code
+// can therefore run in production and in development.
 func (s *Site) WarmSitemap(ctx context.Context, concurrency int) (PrerenderReport, error) {
+	if !s.keepsPages() {
+		s.log.Debug("hearth: warm sitemap skipped, the page cache is off")
+		return PrerenderReport{}, nil
+	}
 	var first, rest []string
 	seen := map[string]bool{}
 	for _, pat := range s.routes.Patterns() {

@@ -2,6 +2,7 @@ package hearth
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -442,4 +443,55 @@ func TestOneServerRunsInProductionAndDevelopment(t *testing.T) {
 			t.Fatal("development keeps no cache")
 		}
 	})
+}
+
+func TestWarmingDoesNothingWhenTheCacheIsOff(t *testing.T) {
+	newSite := func(t *testing.T, db *fakeDB, entries *int) *Site {
+		s, err := New(Options{Bundle: siteBundle(), CacheDir: t.TempDir(), Logger: quiet(),
+			SitemapURLs: func(context.Context) ([]SitemapEntry, error) {
+				*entries++
+				return []SitemapEntry{{Path: "/post/1"}}, nil
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.MustHandle("post/{id}", db.load)
+		return s
+	}
+
+	// Control: with the cache on, WarmSitemap renders the home page and the database page.
+	var calls int
+	db := &fakeDB{}
+	s := newSite(t, db, &calls)
+	rep, err := s.WarmSitemap(context.Background(), 2)
+	if err != nil || rep.OK == 0 || db.calls.Load() == 0 {
+		t.Fatalf("control: %+v err=%v dbcalls=%d", rep, err, db.calls.Load())
+	}
+
+	t.Setenv("HEARTH_CACHE", "off")
+	calls = 0
+	db = &fakeDB{}
+	s = newSite(t, db, &calls)
+	rep, err = s.WarmSitemap(context.Background(), 2)
+	if err != nil || rep.OK != 0 || len(rep.Failures) != 0 || len(rep.Pages) != 0 {
+		t.Fatalf("WarmSitemap with the cache off = %+v, %v; want an empty report and no error", rep, err)
+	}
+	if calls != 0 || db.calls.Load() != 0 || s.Counters.Renders.Load() != 0 {
+		t.Fatalf("nothing may run: sitemap calls=%d db calls=%d renders=%d", calls, db.calls.Load(), s.Counters.Renders.Load())
+	}
+	if w := s.Warm(context.Background(), []string{"/", "/post/1"}, 2); w.OK != 0 || len(w.Failed) != 0 || db.calls.Load() != 0 {
+		t.Fatalf("Warm with the cache off = %+v, db calls %d", w, db.calls.Load())
+	}
+}
+
+func TestBuildFailsFastWhenTheCacheIsOff(t *testing.T) {
+	t.Setenv("HEARTH_CACHE", "off")
+	s, _ := newTestSite(t, &fakeDB{})
+	rep, err := Build(context.Background(), s, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "HEARTH_CACHE=off") {
+		t.Fatalf("Build = %v, want an error naming HEARTH_CACHE=off", err)
+	}
+	if rep.OK != 0 || s.Counters.Renders.Load() != 0 {
+		t.Fatalf("Build rendered %d pages before failing; it must fail first", s.Counters.Renders.Load())
+	}
 }

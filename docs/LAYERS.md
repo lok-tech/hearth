@@ -297,6 +297,16 @@ pair.
      `internal/site/app.go`: run `HEARTH_ENV=dev HEARTH_BUNDLE=. HEARTH_ASSETS=vite:http://localhost:5173` on the one
      server (after upgrading hearth). Its own database-optional-in-dev behaviour (`cfg.Dev`) is the importer's.
 
+7. **Warming is a store concern. Done 2026-11-25.** The design said `Invalidate`, `WatchData` and the sitemap warm-up are
+   no-ops with the store off; phase 1 to 6 only did that for `Invalidate`. Found when the website's server, now the same
+   code in development, rendered its whole sitemap at start with the cache off and kept nothing.
+   - `Warm` and `WarmSitemap` return an empty report (and no error) with `HEARTH_CACHE=off`: nothing renders and
+     `SitemapURLs` is not called. `Build` and `Export` fail at once, before rendering, with an error naming
+     `HEARTH_CACHE=off` (`Site.keepsPages`).
+   - Tests: warming does nothing with the cache off (control: it renders with the cache on) and `Build` fails before
+     rendering a page.
+   - A site that guards warming with its own switch (the website's `WARM=0`) can drop it after upgrading.
+
 ## Open items
 
 - **Mock funcs (not built).** `mock.Stubs` still backs `hearth dev`'s `mock` mode and `hearth check`. The designed

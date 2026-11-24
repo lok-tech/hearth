@@ -203,6 +203,10 @@ Design and decisions: [LAYERS.md](LAYERS.md). The short version, for someone cha
 - `HEARTH_BUNDLE` replaces `Options.Bundle` with `os.DirFS(dir)` in `New`, before anything reads the bundle. With no
   `manifest.json` (a source tree, which needs `placeholder` or `vite:` assets) `configSSR` reads the `ssr` list from
   `hearth.config.json` at the bundle root, so the server does not have to; a bundle that has a manifest ignores it.
+- With the page cache off, everything whose only job is to fill or copy the cache does nothing: `Warm` and
+  `WarmSitemap` return an empty report (no render, no `SitemapURLs` call), `Build` and `Export` fail at once with an
+  error naming `HEARTH_CACHE=off`. The same startup line (`go site.WarmSitemap(...)`) is therefore right in production
+  and in development (`Site.keepsPages`).
 - Do not add a check like `if devMode` to `Site`. Add or select an implementation of a seam.
 - Serving and proxying in development are not Go package concerns: the `hearthDev()` Vite plugin
   (`npm/hearth/vite.js`) reloads on template edits and proxies to the importer's server; `hearth dev` does the same
